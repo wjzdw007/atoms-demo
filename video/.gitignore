@@ -1,0 +1,12 @@
+audio/
+audio_say/
+frames/
+stills/
+check/
+v1/
+node_modules/
+*.wav
+*.jpg
+film.built.html
+timeline.json
+package*.json

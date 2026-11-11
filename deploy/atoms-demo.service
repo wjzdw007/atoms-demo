@@ -1,0 +1,36 @@
+# systemd unit for the app. Copy to /etc/systemd/system/atoms-demo.service and adjust the paths
+# and user. The app listens on localhost only; nginx terminates TLS in front of it.
+#
+# The sandboxing below matters: the app never executes generated code on the server, but if it
+# were ever compromised these settings keep the process from escalating (sudo), reading SSH keys,
+# or writing anywhere except its database and build cache.
+[Unit]
+Description=Atoms Demo (Next.js)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/atoms-demo/app
+Environment=NODE_ENV=production
+ExecStart=/home/ubuntu/atoms-demo/node/bin/node node_modules/next/dist/bin/next start -p 3100 -H 127.0.0.1
+Restart=always
+RestartSec=3
+MemoryMax=800M
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/atoms-demo/app/data /home/ubuntu/atoms-demo/app/.next
+InaccessiblePaths=-/home/ubuntu/.ssh -/home/ubuntu/atoms-demo/relay
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

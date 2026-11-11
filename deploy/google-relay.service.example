@@ -1,0 +1,22 @@
+# Optional: only needed when the server cannot reach Google directly (e.g. mainland China) and you
+# want Google sign-in. Keeps two local ports forwarded to Google's OAuth endpoints through another
+# server you control, then set in .env.local:
+#   GOOGLE_OAUTH_CONNECT=127.0.0.1:8445
+#   GOOGLE_APIS_CONNECT=127.0.0.1:8446
+#
+# On the relay host, authorize the key with forwarding to these two destinations only:
+#   restrict,port-forwarding,command="/bin/false",permitopen="oauth2.googleapis.com:443",permitopen="www.googleapis.com:443" ssh-ed25519 AAAA...
+# (`restrict` alone still allows running commands; the forced command is what blocks them.)
+[Unit]
+Description=SSH port-forward to Google OAuth endpoints
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+ExecStart=/usr/bin/ssh -N -i /path/to/relay/key -o BatchMode=yes -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:8445:oauth2.googleapis.com:443 -L 127.0.0.1:8446:www.googleapis.com:443 relay-user@relay-host
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

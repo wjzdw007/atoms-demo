@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Atoms intro film</title>
+<style>
+  @font-face { font-family: "Plex"; font-weight: 400; src: url("node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Plex"; font-weight: 500; src: url("node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Plex"; font-weight: 600; src: url("node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2") format("woff2"); }
+  @font-face { font-family: "Plex"; font-weight: 700; src: url("node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-700-normal.woff2") format("woff2"); }
+  :root { --ink: #0c0c0c; --muted: #6b6b76; --accent: #4267ff; --line: rgba(12,12,12,.1); --fg: #0c0c0c; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: #f6f6f6; }
+  body { font-family: "Plex", "PingFang SC", sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+  canvas { position: absolute; left: 0; top: 0; }
+  #fx { pointer-events: none; z-index: 5; }
+  .scene { position: absolute; inset: 0; display: none; }
+  .abs { position: absolute; }
+  .center { left: 0; right: 0; text-align: center; }
+  .big { font-size: 124px; font-weight: 600; line-height: 1.18; letter-spacing: -.01em; }
+  .h2 { font-size: 84px; font-weight: 600; line-height: 1.2; }
+  .h3 { font-size: 56px; font-weight: 600; line-height: 1.25; }
+  .lead { font-size: 40px; color: var(--muted); }
+  .hl { color: var(--accent); }
+  .ch { display: inline-block; white-space: pre; }
+  .card { background: #fff; border-radius: 36px; border: 1px solid var(--line); box-shadow: 0 18px 50px rgba(20,24,60,.08); }
+  .pill { display: inline-flex; align-items: center; gap: 12px; padding: 16px 30px; border-radius: 999px; background: #fff; border: 1px solid var(--line); font-size: 32px; font-weight: 500; box-shadow: 0 8px 24px rgba(20,24,60,.06); }
+  .btn { display: inline-flex; align-items: center; gap: 10px; background: var(--accent); color: #fff; border-radius: 999px; font-weight: 600; }
+  .masc { display: block; overflow: visible; }
+  #sub { position: absolute; left: 0; right: 0; bottom: 40px; text-align: center; z-index: 6; }
+  #sub span { display: inline-block; max-width: 1500px; padding: 10px 28px; border-radius: 20px; font-size: 30px; line-height: 1.45; }
+  #mark { position: absolute; left: 60px; top: 48px; display: flex; align-items: center; gap: 14px; font-size: 26px; font-weight: 600; z-index: 6; color: var(--fg); }
+  #mark small { font-weight: 400; font-size: 22px; opacity: .55; }
+
+  .acard { position: absolute; top: 0; width: 400px; height: 520px; padding: 22px; transform-origin: 50% 60%; }
+  .acard .ban { height: 250px; border-radius: 24px; display: flex; align-items: flex-end; justify-content: center; overflow: hidden; }
+  .acard .nm { font-size: 46px; font-weight: 600; margin: 22px 10px 0; }
+  .acard .rl { font-size: 27px; color: var(--accent); margin: 2px 10px 0; font-weight: 500; }
+  .acard .ds { font-size: 27px; color: var(--muted); margin: 12px 10px 0; line-height: 1.4; }
+  .win { border-radius: 28px; background: #fff; border: 1px solid var(--line); box-shadow: 0 40px 100px rgba(40,60,160,.18); overflow: hidden; }
+  .winbar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 22px; border-bottom: 1px solid var(--line); background: #fafafa; }
+  .winbar i { width: 14px; height: 14px; border-radius: 50%; background: #dcdce2; }
+  .winbar b { margin-left: 16px; flex: 1; height: 32px; border-radius: 999px; background: #efeff2; font-size: 19px; font-weight: 400; color: var(--muted); display: flex; align-items: center; padding: 0 18px; }
+  .prod { width: 250px; border-radius: 20px; border: 1px solid var(--line); padding: 14px; background: #fff; }
+  .prod .img { height: 112px; border-radius: 14px; }
+  .prod .t { font-size: 22px; font-weight: 500; margin-top: 10px; }
+  .prod .p { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 21px; color: var(--muted); }
+  .prod .p span:last-child { background: var(--ink); color: #fff; font-size: 17px; padding: 5px 14px; border-radius: 999px; }
+  .lane { height: 76px; border-radius: 999px; background: #f1f2f6; margin-top: 22px; position: relative; }
+  .lane .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
+  .lane .run { position: absolute; top: -14px; width: 100px; height: 100px; }
+  .lane em { position: absolute; right: 24px; top: 0; line-height: 76px; font-style: normal; font-size: 24px; color: var(--muted); }
+  .stat .v { font-size: 104px; font-weight: 700; letter-spacing: -.02em; line-height: 1; }
+  .stat .k { font-size: 28px; color: var(--muted); margin-top: 8px; }
+  .node .yr { font-size: 24px; color: var(--muted); }
+  .node .nm { font-size: 44px; font-weight: 600; }
+  .ghost { width: 200px; text-align: center; color: rgba(255,255,255,.75); font-size: 30px; }
+</style>
+</head>
+<body>
+<canvas id="bg" width="1920" height="1080"></canvas>
+
+<div id="mark"><span id="logo-sm"></span>Atoms<small>· 非官方介绍</small></div>
+
+<!-- S1: everyone has an idea -->
+<section class="scene" data-n="1">
+  <div class="abs" id="spark1" style="left:910px;top:250px;width:100px;height:100px"></div>
+  <div class="abs center big" style="top:430px">
+    <div data-split="L1@0" data-step="0.07">每个人心里，</div>
+    <div data-split="L1@0.42" data-step="0.07">都藏着一个<span class="hl">想做的东西</span>。</div>
+  </div>
+</section>
+
+<!-- S2: night. you are alone -->
+<section class="scene" data-n="2" style="color:#fff">
+  <div class="abs center h2" style="top:150px" data-split="L2@0" data-step="0.06">可是大多数想法，没能活过那个夜晚。</div>
+  <div class="abs center lead" style="top:290px;color:rgba(255,255,255,.7);font-size:46px" data-in="L2@0.5" data-fx="up">不是因为它不够好，</div>
+  <div class="abs center big" style="top:370px;font-size:108px" data-split="L2@0.7" data-step="0.09">而是因为，你只有<span style="color:#ffd66b">一个人</span>。</div>
+  <div class="abs" id="lone" style="left:860px;top:640px;width:200px;height:200px"></div>
+  <div class="abs" id="spark2" style="left:935px;top:575px;width:50px;height:50px"></div>
+  <div class="abs ghost" style="left:420px;top:650px" data-in="L3@0.02" data-fx="fade"><svg width="150" height="150" viewBox="0 0 200 200"><path d="M100 22C150 22 172 70 172 118C172 160 142 180 100 180C58 180 28 160 28 118C28 70 50 22 100 22Z" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="4" stroke-dasharray="12 12"/><text x="100" y="125" text-anchor="middle" font-size="64" fill="rgba(255,255,255,.55)">?</text></svg><div>工程师</div></div>
+  <div class="abs ghost" style="left:1300px;top:650px" data-in="L3@0.3" data-fx="fade"><svg width="150" height="150" viewBox="0 0 200 200"><path d="M100 22C150 22 172 70 172 118C172 160 142 180 100 180C58 180 28 160 28 118C28 70 50 22 100 22Z" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="4" stroke-dasharray="12 12"/><text x="100" y="125" text-anchor="middle" font-size="64" fill="rgba(255,255,255,.55)">?</text></svg><div>设计师</div></div>
+  <div class="abs ghost" style="left:1560px;top:560px" data-in="L3@0.58" data-fx="fade"><svg width="150" height="150" viewBox="0 0 200 200"><path d="M100 22C150 22 172 70 172 118C172 160 142 180 100 180C58 180 28 160 28 118C28 70 50 22 100 22Z" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="4" stroke-dasharray="12 12"/><text x="100" y="125" text-anchor="middle" font-size="64" fill="rgba(255,255,255,.55)">?</text></svg><div>第一个客户</div></div>
+</section>
+
+<!-- S3: what if you were not alone -->
+<section class="scene" data-n="3" style="color:var(--fg)">
+  <div class="abs center h2" style="top:170px" data-split="L4@0" data-step="0.07">如果，从今天起，</div>
+  <div class="abs center big" style="top:290px" data-split="L4@0.42" data-step="0.08">你<span class="hl">不再是一个人</span>呢？</div>
+  <div class="abs" id="gather" style="left:0;top:600px;width:1920px;height:320px"></div>
+</section>
+
+<!-- S4: Atoms -->
+<section class="scene" data-n="4">
+  <div class="abs center" style="top:130px"><span id="logo-lg" style="display:inline-block"></span></div>
+  <div class="abs center" style="top:290px;font-size:190px;font-weight:700;letter-spacing:-.03em" data-split="L5@0.06" data-step="0.09">Atoms</div>
+  <div class="abs center h3" style="top:545px" data-in="L5@0.36" data-fx="up">不是一个聊天窗口，</div>
+  <div class="abs center h2" style="top:625px" data-split="L5@0.62" data-step="0.07">而是<span class="hl">一整支团队</span>。</div>
+  <div class="abs" id="lineup" style="left:0;top:780px;width:1920px;height:160px"></div>
+</section>
+
+<!-- S5: the team -->
+<section class="scene" data-n="5">
+  <div class="abs h3" style="left:120px;top:120px" data-in="S+0.3" data-fx="up">你的 <span class="hl">AI 团队</span></div>
+  <div class="abs lead" style="left:120px;top:200px;font-size:32px" data-in="S+0.5" data-fx="up">调研 · 规划 · 构建 · 增长，各司其职</div>
+  <div class="abs" id="strip" style="left:0;top:330px;height:520px;transform-origin:0 50%"></div>
+</section>
+
+<!-- S6: say it, and it is there -->
+<section class="scene" data-n="6">
+  <div class="abs center h2" id="s6title" style="top:150px" data-split="L9@0" data-step="0.07">你只需要，把那句话<span class="hl">说出口</span>。</div>
+  <div class="abs card" id="prompt" style="left:410px;top:340px;width:1100px;height:170px;border-radius:40px;padding:34px 44px;transform-origin:50% 0">
+    <div style="font-size:42px;white-space:nowrap"><span id="typed"></span><span id="caret" style="color:var(--accent)">|</span></div>
+    <div class="btn" id="startbtn" style="position:absolute;right:30px;bottom:26px;font-size:28px;padding:14px 30px">Start →</div>
+  </div>
+  <div class="abs win" id="win" style="left:330px;top:250px;width:1260px;height:590px">
+    <div class="winbar"><i></i><i></i><i></i><b>你的店铺 · 由 Atoms 构建</b></div>
+    <div style="padding:24px 30px;position:relative">
+      <div style="display:flex;justify-content:space-between;align-items:center" data-in="L10@0.1" data-fx="left">
+        <div style="font-size:30px;font-weight:600">🛍️ 小店</div>
+        <div style="font-size:21px;color:var(--muted);display:flex;gap:28px;align-items:center"><span>首页</span><span>商品</span><span>购物车</span><span class="btn" style="padding:8px 20px;font-size:19px;background:var(--ink)">登录</span></div>
+      </div>
+      <div style="height:150px;border-radius:22px;margin-top:18px;background:linear-gradient(105deg,#cfdcff,#e3d4ff 55%,#ffd9e8);display:flex;align-items:center;padding:0 36px;font-size:42px;font-weight:600" data-in="L10@0.2" data-fx="up">新品上架 · 限时包邮</div>
+      <div style="display:flex;gap:22px;margin-top:20px">
+        <div class="prod" data-in="L10@0.30" data-fx="pop"><div class="img" style="background:#d6f5df"></div><div class="t">陶瓷马克杯</div><div class="p"><span>¥59</span><span>购买</span></div></div>
+        <div class="prod" data-in="L10@0.36" data-fx="pop"><div class="img" style="background:#ffe6cf"></div><div class="t">帆布托特包</div><div class="p"><span>¥129</span><span>购买</span></div></div>
+        <div class="prod" data-in="L10@0.42" data-fx="pop"><div class="img" style="background:#e3d4ff"></div><div class="t">香薰蜡烛</div><div class="p"><span>¥89</span><span>购买</span></div></div>
+        <div class="prod" data-in="L10@0.48" data-fx="pop"><div class="img" style="background:#cfdcff"></div><div class="t">手账本</div><div class="p"><span>¥45</span><span>购买</span></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="abs" style="left:1400px;top:215px" data-in="L10@0.8" data-fx="pop"><span class="pill" style="background:#12a150;color:#fff;border:0;font-size:36px;padding:18px 34px;transform:rotate(6deg)">● 已上线</span></div>
+  <div class="abs center" style="top:868px;display:flex;justify-content:center;gap:24px">
+    <span class="pill" data-in="L10@0.34" data-fx="pop">🔐 能登录</span>
+    <span class="pill" data-in="L10@0.48" data-fx="pop">🗄️ 能存数据</span>
+    <span class="pill" data-in="L10@0.62" data-fx="pop">💳 能收款</span>
+  </div>
+  <div class="abs" id="peek" style="left:150px;top:560px;width:190px;height:190px" data-in="L10@0.15" data-fx="up"></div>
+  <div class="abs" id="peek2" style="left:1590px;top:600px;width:170px;height:170px" data-in="L10@0.4" data-fx="up"></div>
+</section>
+
+<!-- S7: built in -->
+<section class="scene" data-n="7">
+  <div class="abs center h2" style="top:130px" data-in="S+0.3" data-fx="up">真正的产品，<span class="hl">不只是演示</span></div>
+  <div class="abs card" style="left:130px;top:310px;width:800px;height:520px;padding:50px 56px" data-in="L11@0.02" data-fx="up">
+    <div class="h3">☁️ Atoms Cloud</div>
+    <div class="lead" style="font-size:30px;margin-top:6px">全栈后端，开箱即用</div>
+    <div style="display:flex;gap:20px;margin-top:44px;flex-wrap:wrap">
+      <span class="pill" style="background:#eef2ff" data-in="L11@0.16" data-fx="pop">🔐 用户登录</span>
+      <span class="pill" style="background:#eaf9ee" data-in="L11@0.22" data-fx="pop">🗄️ 数据库</span>
+      <span class="pill" style="background:#f3ecff" data-in="L11@0.28" data-fx="pop">🌐 托管</span>
+      <span class="pill" style="background:#fff1e3" data-in="L11@0.34" data-fx="pop">💳 Stripe 支付</span>
+      <span class="pill" style="background:#ffeef4" data-in="L11@0.40" data-fx="pop">🧠 AI 集成</span>
+    </div>
+  </div>
+  <div class="abs card" style="left:990px;top:310px;width:800px;height:520px;padding:50px 56px" data-in="L11@0.4" data-fx="up">
+    <div class="h3">🏁 Race Mode</div>
+    <div class="lead" style="font-size:30px;margin-top:6px">多个模型同时作答，只留下最好的一版</div>
+    <div id="race" style="margin-top:26px">
+      <div class="lane"><div class="fill" style="background:#cfdcff"></div><div class="run"></div><em>模型 A</em></div>
+      <div class="lane"><div class="fill" style="background:#d6f5df"></div><div class="run"></div><em>模型 B</em></div>
+      <div class="lane"><div class="fill" style="background:#e3d4ff"></div><div class="run"></div><em>模型 C</em></div>
+    </div>
+  </div>
+</section>
+
+<!-- S8: where it comes from -->
+<section class="scene" data-n="8">
+  <div class="abs h2" style="left:130px;top:120px;font-size:72px" data-in="S+0.3" data-fx="up">从开源研究，<span class="hl">一路走到今天</span></div>
+  <div class="abs" id="tl" style="left:130px;top:300px;width:900px;height:6px;border-radius:6px;background:#e6e6ec"><i style="display:block;height:100%;width:0;border-radius:6px;background:var(--accent)"></i></div>
+  <div class="abs node" style="left:130px;top:330px" data-in="L12@0.10" data-fx="up"><div class="yr">2022 – 2023</div><div class="nm">MetaGPT</div></div>
+  <div class="abs node" style="left:470px;top:330px" data-in="L12@0.17" data-fx="up"><div class="yr">2024 – 2025</div><div class="nm">MGX</div></div>
+  <div class="abs node" style="left:790px;top:330px" data-in="L12@0.23" data-fx="up"><div class="yr">现在</div><div class="nm hl">Atoms</div></div>
+  <div class="abs" style="left:130px;top:470px;width:960px;display:grid;grid-template-columns:1fr 1fr;gap:34px 40px">
+    <div class="stat" data-in="L12@0.29" data-fx="up"><div class="v" data-count="168" data-suffix="K" data-cue="L12@0.29">0</div><div class="k">GitHub Stars</div></div>
+    <div class="stat" data-in="L12@0.46" data-fx="up"><div class="v" data-count="30" data-prefix="~" data-cue="L12@0.46">0</div><div class="k">篇论文 · ICLR / NeurIPS / ICML</div></div>
+    <div class="stat" data-in="L12@0.58" data-fx="up"><div class="v" data-count="170" data-suffix="+" data-cue="L12@0.58">0</div><div class="k">国家和地区</div></div>
+    <div class="stat" data-in="L12@0.75" data-fx="up"><div class="v hl" data-count="1" data-suffix="M+" data-cue="L12@0.75">0</div><div class="k">和你一样的创造者</div></div>
+  </div>
+  <canvas class="abs" id="globe" width="720" height="720" style="left:1130px;top:200px"></canvas>
+</section>
+
+<!-- S9: make it -->
+<section class="scene" data-n="9">
+  <div class="abs" id="spark9" style="left:910px;top:150px;width:100px;height:100px"></div>
+  <div class="abs center big" id="s9a" style="top:330px">
+    <div data-split="L13@0" data-step="0.08">别再让想法，</div>
+    <div data-split="L13@0.5" data-step="0.08">只是<span class="hl">想法</span>。</div>
+  </div>
+  <div class="abs center" id="s9b" style="top:130px">
+    <div style="display:flex;justify-content:center;align-items:center;gap:26px;font-size:120px;font-weight:700;letter-spacing:-.03em" data-in="L14@0" data-fx="pop"><span id="logo-end"></span>Atoms</div>
+    <div class="big" style="margin-top:24px;font-size:150px" data-split="L14@0.42" data-step="0.11">把它，<span class="hl">做出来</span>。</div>
+    <div style="margin-top:34px" data-in="E14+0.5" data-fx="up"><span class="btn" style="font-size:40px;padding:22px 52px">atoms.dev →</span></div>
+  </div>
+  <div class="abs" id="finale" style="left:0;top:800px;width:1920px;height:160px"></div>
+  <div class="abs center" style="top:1012px;font-size:22px;color:var(--muted)" data-in="E14+1.2" data-fx="fade">非官方介绍 · 应聘者自制 · 资料来源：atoms.dev 公开页面（2026 年 11 月）</div>
+</section>
+
+<canvas id="fx" width="1920" height="1080"></canvas>
+<div id="sub"><span></span></div>
+
+<script>
+const TL = /*TIMELINE*/null/*END*/;
+const clamp = (x) => Math.max(0, Math.min(1, x));
+const easeOut = (p) => 1 - Math.pow(1 - p, 3);
+const easeIO = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const easeBack = (p) => { const c = 1.9; return 1 + (c + 1) * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); };
+const lerp = (a, b, p) => a + (b - a) * p;
+const rnd = (i, n) => { const x = Math.sin(i * 127.1 + n * 311.7) * 43758.5453; return x - Math.floor(x); };
+const $ = (id) => document.getElementById(id);
+
+// ---------- characters: original drawings in the friendly spirit of the product's agents ----------
+const TEAM = [
+  { n: "Mike", r: "团队负责人", d: "统筹全局，关键处请你拍板", c: ["#ffd3a6", "#ff9a4d"], ban: "#ffe6cf", acc: "star" },
+  { n: "Iris", r: "深度研究员", d: "找到真实的需求与机会", c: ["#e6ccff", "#b07cf5"], ban: "#e9dbff", acc: "cap" },
+  { n: "Emma", r: "产品经理", d: "把念头写成清晰的方案", c: ["#ffd0e0", "#ff86b3"], ban: "#ffe1ec", acc: "bow" },
+  { n: "Bob", r: "架构师", d: "设计可靠、可扩展的蓝图", c: ["#ffffff", "#dfe2ee"], ban: "#d9dcf2", acc: "scarf" },
+  { n: "Alex", r: "工程师", d: "前端、后端、部署，全部写好", c: ["#c4d6ff", "#6b95ff"], ban: "#cfdcff", acc: "glasses" },
+  { n: "David", r: "数据分析师", d: "从数据里读出下一步", c: ["#c5f5cf", "#5fd47c"], ban: "#d6f5df", acc: "phones" },
+  { n: "Sarah", r: "SEO 专家", d: "让搜索引擎带来客户", c: ["#fff0b8", "#f8c94a"], ban: "#fff3cc", acc: "lens" },
+  { n: "Adrian", r: "广告专家", d: "自动投放，放大增长", c: ["#ffc9bf", "#ff7a6b"], ban: "#ffe0da", acc: "horn" },
+];
+const ACC = {
+  star: '<polygon points="100,138 106,152 121,153 109,162 113,177 100,169 87,177 91,162 79,153 94,152" fill="#fff" opacity=".95"/>',
+  cap: '<polygon points="100,0 168,24 100,48 32,24" fill="#2b2b3a"/><rect x="72" y="30" width="56" height="18" rx="6" fill="#2b2b3a"/><path d="M160 26v30" stroke="#ffd66b" stroke-width="5" stroke-linecap="round"/><circle cx="160" cy="60" r="7" fill="#ffd66b"/>',
+  bow: '<path d="M138 34l34-16v36z" fill="#ff5c93"/><path d="M138 34l-30-16v36z" fill="#ff5c93"/><circle cx="138" cy="34" r="9" fill="#ff86b3"/>',
+  scarf: '<rect x="42" y="140" width="116" height="20" rx="10" fill="#2b2b3a"/><rect x="116" y="150" width="20" height="40" rx="8" fill="#2b2b3a"/>',
+  glasses: '<circle cx="78" cy="108" r="20" fill="rgba(255,255,255,.35)" stroke="#2b2b3a" stroke-width="5"/><circle cx="122" cy="108" r="20" fill="rgba(255,255,255,.35)" stroke="#2b2b3a" stroke-width="5"/><path d="M98 108h4" stroke="#2b2b3a" stroke-width="5"/>',
+  phones: '<path d="M36 100Q100 -6 164 100" fill="none" stroke="#2b2b3a" stroke-width="9" stroke-linecap="round"/><rect x="20" y="90" width="26" height="44" rx="12" fill="#2b2b3a"/><rect x="154" y="90" width="26" height="44" rx="12" fill="#2b2b3a"/>',
+  lens: '<circle cx="158" cy="146" r="17" fill="rgba(255,255,255,.6)" stroke="#2b2b3a" stroke-width="6"/><path d="M170 160l16 18" stroke="#2b2b3a" stroke-width="8" stroke-linecap="round"/>',
+  horn: '<polygon points="150,150 190,126 190,178" fill="#2b2b3a"/><rect x="138" y="143" width="16" height="16" rx="4" fill="#2b2b3a"/>',
+  none: "",
+};
+let mid = 0;
+const mascots = [];
+function mascot(host, who, opts = {}) {
+  const m = typeof who === "number" ? TEAM[who] : who;
+  const id = "m" + mid++;
+  host.innerHTML = `<svg class="masc" viewBox="0 -6 200 206" width="100%" height="100%">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${m.c[0]}"/><stop offset="1" stop-color="${m.c[1]}"/></linearGradient></defs>
+    <ellipse cx="100" cy="188" rx="54" ry="8" fill="rgba(0,0,0,.10)"/>
+    <g class="mb">
+      <path d="M100 22C150 22 172 70 172 118C172 160 142 180 100 180C58 180 28 160 28 118C28 70 50 22 100 22Z" fill="url(#${id})"/>
+      <ellipse cx="72" cy="62" rx="22" ry="12" fill="#fff" opacity=".5" transform="rotate(-28 72 62)"/>
+      <g class="eyes"><ellipse cx="78" cy="108" rx="9" ry="12" fill="#1b1b1f"/><ellipse cx="122" cy="108" rx="9" ry="12" fill="#1b1b1f"/><circle cx="81" cy="103" r="3.2" fill="#fff"/><circle cx="125" cy="103" r="3.2" fill="#fff"/></g>
+      <ellipse cx="60" cy="130" rx="10" ry="6" fill="#ff8fa3" opacity=".55"/><ellipse cx="140" cy="130" rx="10" ry="6" fill="#ff8fa3" opacity=".55"/>
+      <path d="${opts.sad ? "M92 136Q100 129 108 136" : "M91 128Q100 138 109 128"}" fill="none" stroke="#1b1b1f" stroke-width="3.6" stroke-linecap="round"/>
+      ${ACC[m.acc || "none"]}
+    </g></svg>`;
+  const svg = host.firstChild;
+  const rec = { body: svg.querySelector(".mb"), eyes: svg.querySelector(".eyes"), ph: rnd(mid, 7) * 6.28, amp: opts.amp ?? 5 };
+  for (const el of [rec.body, rec.eyes]) { el.style.transformBox = "fill-box"; el.style.transformOrigin = "50% 60%"; }
+  mascots.push(rec);
+  return host;
+}
+function animateMascots(t) {
+  for (const m of mascots) {
+    m.body.style.transform = `translateY(${Math.sin(t * 2.4 + m.ph) * m.amp}px) rotate(${Math.sin(t * 1.3 + m.ph) * 1.6}deg)`;
+    m.eyes.style.transform = `scaleY(${(t + m.ph) % 3.6 < 0.14 ? 0.12 : 1})`;
+  }
+}
+const LOGO = (s, disc = "#0c0c0c", mark = "#fff") => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" style="display:block"><circle cx="12" cy="12" r="11" fill="${disc}"/><path d="M5.2 14.6c2.2 3.4 7.6 4.4 11.4 1.2" fill="none" stroke="${mark}" stroke-width="2.3" stroke-linecap="round"/><circle cx="16.4" cy="8.2" r="2.3" fill="${mark}"/></svg>`;
+const SPARK = '<div style="position:absolute;inset:-160%;border-radius:50%;background:radial-gradient(circle,rgba(255,214,107,.55),rgba(255,214,107,0) 62%)"></div><div style="position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 40% 35%,#fff7d6,#ffd66b 55%,#ffb93c)"></div>';
+
+// ---------- static setup ----------
+$("logo-lg").innerHTML = LOGO(150);
+$("logo-end").innerHTML = LOGO(130);
+for (const id of ["spark1", "spark2", "spark9"]) $(id).innerHTML = SPARK;
+mascot($("lone"), { c: ["#f2f3fa", "#c9cce0"] }, { sad: true, amp: 2 });
+mascot($("peek"), 4);
+mascot($("peek2"), 2);
+function row(host, size, gap) {
+  const total = TEAM.length * size + (TEAM.length - 1) * gap;
+  return TEAM.map((_, i) => {
+    const d = document.createElement("div");
+    d.style.cssText = `position:absolute;left:${(1920 - total) / 2 + i * (size + gap)}px;top:0;width:${size}px;height:${size}px`;
+    host.appendChild(d);
+    mascot(d, i);
+    return d;
+  });
+}
+const gather = row($("gather"), 190, 26);
+const lineup = row($("lineup"), 150, 30);
+const finale = row($("finale"), 150, 34);
+const cards = TEAM.map((m, i) => {
+  const c = document.createElement("div");
+  c.className = "card acard";
+  c.style.left = i * 460 + "px";
+  c.innerHTML = `<div class="ban" style="background:${m.ban}"><div style="width:210px;height:210px;margin-bottom:-14px"></div></div><div class="nm">${m.n}</div><div class="rl">${m.r}</div><div class="ds">${m.d}</div>`;
+  $("strip").appendChild(c);
+  mascot(c.querySelector(".ban div"), i);
+  return c;
+});
+document.querySelectorAll("#race .run").forEach((el, i) => mascot(el, [4, 5, 1][i], { amp: 3 }));
+
+// ---------- declarative cues ----------
+const scenes = [...document.querySelectorAll(".scene")].map((el) => ({ el, ...TL.scenes[Number(el.dataset.n) - 1] }));
+// "S+0.5" = 0.5s into the scene; "L6@0.3" = 30% through line 6; "L6+1" / "E6+1" = seconds after its start / end.
+function when(expr, scene) {
+  const m = expr.match(/^([LES])(\d*)(?:([+-][\d.]+)|@([\d.]+))?$/);
+  if (m[1] === "S") return scene.start + Number(m[3] || 0);
+  const cue = TL.cues[Number(m[2]) - 1];
+  if (m[4] !== undefined) return cue.start + (cue.end - cue.start) * Number(m[4]);
+  return (m[1] === "L" ? cue.start : cue.end) + Number(m[3] || 0);
+}
+function split(node, state, items) {
+  for (const child of [...node.childNodes]) {
+    if (child.nodeType === 3) {
+      const frag = document.createDocumentFragment();
+      for (const ch of child.textContent) {
+        const s = document.createElement("span");
+        s.className = "ch";
+        s.textContent = ch;
+        frag.appendChild(s);
+        items.push({ el: s, at: state.t, dur: 0.55, fx: "rise" });
+        state.t += state.step;
+      }
+      child.replaceWith(frag);
+    } else split(child, state, items);
+  }
+}
+for (const scene of scenes) {
+  scene.items = [];
+  for (const el of scene.el.querySelectorAll("[data-split]")) {
+    split(el, { t: when(el.dataset.split, scene), step: Number(el.dataset.step || 0.06) }, scene.items);
+  }
+  for (const el of scene.el.querySelectorAll("[data-in]")) {
+    scene.items.push({ el, at: when(el.dataset.in, scene), dur: Number(el.dataset.dur || 0.7), fx: el.dataset.fx || "fade" });
+  }
+}
+function applyFx(item, t) {
+  const raw = clamp((t - item.at) / item.dur);
+  const p = easeOut(raw), d = 1 - p, s = item.el.style;
+  s.opacity = item.fx === "pop" ? clamp(raw * 3) : p;
+  if (item.fx === "up") s.transform = `translateY(${d * 50}px)`;
+  else if (item.fx === "left") s.transform = `translateX(${-d * 60}px)`;
+  else if (item.fx === "rise") s.transform = `translateY(${d * 0.55}em) rotate(${d * 6}deg)`;
+  else if (item.fx === "pop") s.transform = `scale(${raw <= 0 ? 0.5 : 0.5 + 0.5 * easeBack(raw)})`;
+}
+const popIn = (el, t, at, lift = 0) => {
+  const raw = clamp((t - at) / 0.6);
+  el.style.opacity = clamp(raw * 3);
+  el.style.transform = `translateY(${-lift}px) scale(${raw <= 0 ? 0.3 : 0.3 + 0.7 * easeBack(raw)})`;
+};
+const hop = (t, at, h = 46) => { const p = clamp((t - at) / 0.55); return p <= 0 || p >= 1 ? 0 : Math.sin(p * Math.PI) * h; };
+
+// ---------- night ----------
+const nightAt = (t) => easeIO(clamp((t - (scenes[1].start - 0.5)) / 1.4)) * (1 - easeIO(clamp((t - when("L4@0.4")) / 1.5)));
+
+// ---------- confetti ----------
+const BURSTS = [
+  { t: when("L10@0.8"), x: 1520, y: 260, n: 150 },
+  { t: when("L14") + 0.05, x: 960, y: 250, n: 260 },
+];
+const COLORS = ["#4267ff", "#ff86b3", "#ffd66b", "#5fd47c", "#b07cf5", "#ff9a4d", "#6b95ff"];
+const fx = $("fx").getContext("2d");
+function drawFx(t) {
+  fx.clearRect(0, 0, 1920, 1080);
+  BURSTS.forEach((b, bi) => {
+    const dt = t - b.t;
+    if (dt < 0 || dt > 4) return;
+    for (let i = 0; i < b.n; i++) {
+      const a = rnd(i, bi * 9 + 1) * Math.PI * 2, v = 380 + rnd(i, bi * 9 + 2) * 900;
+      const drag = (1 - Math.exp(-1.6 * dt)) / 1.6;
+      const x = b.x + Math.cos(a) * v * drag, y = b.y + Math.sin(a) * v * drag * 0.8 - 260 * drag + 420 * dt * dt * 0.5;
+      fx.save();
+      fx.translate(x, y);
+      fx.rotate(a + dt * (3 + rnd(i, 3) * 8));
+      fx.globalAlpha = clamp(1 - (dt - 2.2) / 1.6);
+      fx.fillStyle = COLORS[i % COLORS.length];
+      const w = 10 + rnd(i, 4) * 12;
+      if (i % 3 === 0) { fx.beginPath(); fx.arc(0, 0, w / 2.4, 0, 6.283); fx.fill(); } else fx.fillRect(-w / 2, -w / 4, w, w / 2);
+      fx.restore();
+    }
+  });
+}
+
+// ---------- background ----------
+const bg = $("bg").getContext("2d");
+const STARS = Array.from({ length: 140 }, (_, i) => ({ x: rnd(i, 1) * 1920, y: rnd(i, 2) * 760, s: 0.6 + rnd(i, 3) * 1.8, ph: rnd(i, 4) * 6.28 }));
+function drawBg(t, night) {
+  bg.fillStyle = "#f6f6f6";
+  bg.fillRect(0, 0, 1920, 1080);
+  const blobs = [
+    [420 + Math.sin(t * 0.13) * 260, 260 + Math.cos(t * 0.11) * 140, 620, "207,220,255"],
+    [1500 + Math.cos(t * 0.1) * 240, 300 + Math.sin(t * 0.12) * 160, 560, "227,212,255"],
+    [1300 + Math.sin(t * 0.09 + 1) * 300, 900 + Math.cos(t * 0.1) * 120, 600, "214,245,223"],
+    [500 + Math.cos(t * 0.08 + 2) * 280, 920 + Math.sin(t * 0.13) * 110, 520, "255,230,207"],
+  ];
+  for (const [x, y, r, c] of blobs) {
+    const g = bg.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${c},.85)`);
+    g.addColorStop(1, `rgba(${c},0)`);
+    bg.fillStyle = g;
+    bg.fillRect(0, 0, 1920, 1080);
+  }
+  bg.fillStyle = "rgba(12,12,12,.045)";
+  for (let x = 24; x < 1920; x += 48) for (let y = 24; y < 1080; y += 48) bg.fillRect(x, y, 2, 2);
+  if (night > 0) {
+    const g = bg.createLinearGradient(0, 0, 0, 1080);
+    g.addColorStop(0, `rgba(9,12,38,${night * 0.97})`);
+    g.addColorStop(1, `rgba(28,26,70,${night * 0.95})`);
+    bg.fillStyle = g;
+    bg.fillRect(0, 0, 1920, 1080);
+    for (const s of STARS) {
+      bg.fillStyle = `rgba(255,255,255,${night * (0.35 + 0.5 * (0.5 + 0.5 * Math.sin(t * 1.6 + s.ph)))})`;
+      bg.beginPath();
+      bg.arc(s.x, s.y, s.s, 0, 6.283);
+      bg.fill();
+    }
+  }
+}
+
+// ---------- globe ----------
+const gl = $("globe").getContext("2d");
+const PTS = Array.from({ length: 900 }, (_, i) => { const y = 1 - (i / 899) * 2, r = Math.sqrt(1 - y * y), a = i * 2.39996; return [Math.cos(a) * r, y, Math.sin(a) * r]; });
+const CITIES = Array.from({ length: 34 }, (_, i) => PTS[Math.floor(rnd(i, 11) * 700) + 100]);
+function drawGlobe(t, grow) {
+  gl.clearRect(0, 0, 720, 720);
+  const R = 300 * easeOut(clamp(grow)), cx = 360, cy = 360, rot = t * 0.32, tilt = 0.38;
+  const proj = ([x, y, z]) => {
+    const x1 = x * Math.cos(rot) + z * Math.sin(rot), z1 = -x * Math.sin(rot) + z * Math.cos(rot);
+    return [cx + x1 * R, cy + (y * Math.cos(tilt) - z1 * Math.sin(tilt)) * R, y * Math.sin(tilt) + z1 * Math.cos(tilt)];
+  };
+  const halo = gl.createRadialGradient(cx, cy, R * 0.6, cx, cy, R * 1.25 + 1);
+  halo.addColorStop(0, "rgba(66,103,255,.10)");
+  halo.addColorStop(1, "rgba(66,103,255,0)");
+  gl.fillStyle = halo;
+  gl.fillRect(0, 0, 720, 720);
+  for (const p of PTS) {
+    const [x, y, z] = proj(p);
+    gl.fillStyle = z > 0 ? `rgba(66,103,255,${0.25 + 0.6 * z})` : "rgba(66,103,255,.07)";
+    gl.beginPath();
+    gl.arc(x, y, z > 0 ? 1.4 + 2.2 * z : 1.2, 0, 6.283);
+    gl.fill();
+  }
+  CITIES.forEach((c, i) => {
+    const on = clamp((grow - 0.25 - i * 0.022) * 4);
+    const [x, y, z] = proj(c);
+    if (on <= 0 || z < 0.05) return;
+    const pulse = (t * 0.9 + rnd(i, 5)) % 1;
+    gl.strokeStyle = `rgba(255,134,179,${(1 - pulse) * 0.8 * on})`;
+    gl.lineWidth = 2.5;
+    gl.beginPath();
+    gl.arc(x, y, 6 + pulse * 26, 0, 6.283);
+    gl.stroke();
+    gl.fillStyle = `rgba(255,110,160,${on})`;
+    gl.beginPath();
+    gl.arc(x, y, 6, 0, 6.283);
+    gl.fill();
+  });
+}
+
+// ---------- per-scene motion ----------
+const TEAM_AT = ["L6@0.0", "L6@0.3", "L6@0.6", "L7@0.0", "L7@0.4", "L8@0.0", "L8@0.36", "L8@0.6"].map((c) => when(c));
+const custom = {
+  1(t) {
+    const p = easeOut(clamp((t - 0.4) / 1.6)), s = $("spark1").style;
+    s.opacity = p;
+    s.transform = `translateY(${(1 - p) * 260 + Math.sin(t * 1.6) * 10}px) scale(${0.5 + 0.5 * p + 0.06 * Math.sin(t * 3)})`;
+  },
+  2(t, sc) {
+    const dim = clamp((t - when("L2@0.15")) / 5);
+    $("spark2").style.opacity = 1 - 0.85 * dim;
+    $("spark2").style.transform = `translateY(${dim * 26}px) scale(${1 - 0.5 * dim + 0.05 * Math.sin(t * 5)})`;
+    $("lone").style.opacity = easeOut(clamp((t - sc.start - 0.4) / 1));
+  },
+  3(t) {
+    const base = when("L4@0.5");
+    gather.forEach((el, i) => popIn(el, t, base + Math.abs(i - 3.5) * 0.14, hop(t, base + 1.1 + i * 0.07, 40)));
+  },
+  4(t, sc) {
+    const p = clamp((t - sc.start - 0.2) / 0.9), s = $("logo-lg").style;
+    s.opacity = clamp(p * 2);
+    s.transform = `scale(${p <= 0 ? 0.2 : 0.2 + 0.8 * easeBack(p)}) rotate(${(1 - easeOut(p)) * -140}deg)`;
+    const base = when("L5@0.62");
+    lineup.forEach((el, i) => popIn(el, t, base + i * 0.07, hop(t, base + 0.9 + i * 0.09)));
+  },
+  5(t, sc) {
+    let f = 0;
+    for (let k = 1; k < TEAM_AT.length; k++) f += easeIO(clamp((t - TEAM_AT[k] + 0.25) / 0.75));
+    const enter = (1 - easeOut(clamp((t - sc.start - 0.2) / 1.1))) * 1400;
+    // Final beat: pull back until the whole team fits on screen.
+    const z = easeIO(clamp((t - when("L8@0.86")) / 0.9));
+    $("strip").style.transform = `translate(${lerp(760 - f * 460, 55, z) + enter}px, ${z * 30}px) scale(${1 - 0.5 * z})`;
+    cards.forEach((c, i) => {
+      const near = Math.max(0, 1 - Math.abs(i - f)) * (1 - z);
+      c.style.transform = `scale(${1 + 0.13 * near}) translateY(${-18 * near}px)`;
+      c.style.opacity = 0.5 + 0.5 * Math.max(near, z);
+      c.style.boxShadow = `0 ${18 + 30 * near}px ${50 + 60 * near}px rgba(40,60,160,${0.08 + 0.16 * near})`;
+      c.style.zIndex = near > 0.5 ? 2 : 1;
+    });
+  },
+  6(t) {
+    const text = "帮我做一个带在线支付的电商网站";
+    const t0 = when("L9@0.25"), tp = clamp((t - t0) / (when("E9") - t0 - 0.2));
+    $("typed").textContent = text.slice(0, Math.round(tp * text.length));
+    $("caret").style.opacity = Math.floor(t * 2.4) % 2 ? 1 : 0.1;
+    const show = easeOut(clamp((t - when("L9@0.1")) / 0.7));
+    const go = easeIO(clamp((t - when("L10") + 0.5) / 0.8));
+    $("startbtn").style.transform = `scale(${1 - 0.12 * hop(t, when("L10") - 0.75, 1)})`;
+    $("prompt").style.opacity = show * (1 - go);
+    $("prompt").style.transform = `translateY(${(1 - show) * 60 - go * 120}px) scale(${1 - 0.15 * go})`;
+    $("s6title").style.opacity = 1 - go;
+    const w = easeOut(clamp((t - when("L10") + 0.2) / 0.9));
+    $("win").style.opacity = w;
+    $("win").style.transform = `translateY(${(1 - w) * 160}px) scale(${0.92 + 0.08 * w})`;
+  },
+  7(t) {
+    const t0 = when("L11@0.52"), speeds = [0.7, 1, 0.55];
+    document.querySelectorAll("#race .lane").forEach((lane, i) => {
+      const p = easeOut(clamp(((t - t0) / (when("E11") - t0 - 0.3)) * speeds[i]));
+      lane.querySelector(".fill").style.width = `${14 + 62 * p}%`;
+      lane.querySelector(".run").style.left = `${3 + 62 * p}%`;
+    });
+  },
+  8(t, sc) {
+    document.querySelector("#tl i").style.width = `${easeOut(clamp((t - when("L12@0.08")) / 2.2)) * 100}%`;
+    for (const el of sc.el.querySelectorAll("[data-count]")) {
+      const q = easeOut(clamp((t - when(el.dataset.cue)) / 1.2));
+      el.textContent = (el.dataset.prefix || "") + Math.round(Number(el.dataset.count) * q) + (el.dataset.suffix || "");
+    }
+    drawGlobe(t, (t - sc.start - 0.3) / 2.2);
+  },
+  9(t, sc) {
+    const b = BURSTS[1].t, grow = clamp((t - sc.start) / (b - sc.start));
+    const gone = clamp((t - b) / 0.25), s = $("spark9").style;
+    s.opacity = (1 - gone) * clamp((t - sc.start) / 0.6);
+    s.transform = `scale(${0.6 + 1.3 * easeIO(grow) + 0.08 * Math.sin(t * 6) + gone * 6})`;
+    const swap = clamp((t - b + 0.25) / 0.4);
+    $("s9a").style.opacity = 1 - swap;
+    $("s9a").style.transform = `scale(${1 + 0.08 * swap})`;
+    $("s9b").style.opacity = swap;
+    finale.forEach((el, i) => popIn(el, t, b + 0.1 + i * 0.06, hop(t, b + 0.9 + i * 0.1, 60) + hop(t, b + 2.4 + i * 0.1, 44)));
+  },
+};
+
+const FADE = 0.6;
+const subEl = document.querySelector("#sub span");
+let logoDark = null;
+window.renderAt = function (t) {
+  const night = nightAt(t), dark = night > 0.5;
+  drawBg(t, night);
+  document.documentElement.style.setProperty("--fg", dark ? "#fff" : "#0c0c0c");
+  if (dark !== logoDark) { $("logo-sm").innerHTML = dark ? LOGO(40, "#fff", "#0c0c0c") : LOGO(40); logoDark = dark; }
+  for (const sc of scenes) {
+    const visible = t >= sc.start - 0.02 && t < sc.end + FADE;
+    sc.el.style.display = visible ? "block" : "none";
+    if (!visible) continue;
+    const fin = sc.n === 1 ? 1 : clamp((t - sc.start) / FADE), fout = sc.n === scenes.length ? 1 : 1 - clamp((t - sc.end) / FADE);
+    sc.el.style.opacity = Math.min(fin, fout);
+    sc.el.style.transform = `translateY(${(1 - fout) * -30}px) scale(${1 + 0.03 * (1 - fout)})`;
+    for (const item of sc.items) applyFx(item, t);
+    custom[sc.n]?.(t, sc);
+  }
+  animateMascots(t);
+  drawFx(t);
+  $("mark").style.opacity = clamp((t - 0.8) / 0.8) * (1 - clamp((t - BURSTS[1].t + 0.4) / 0.4));
+  const cue = TL.cues.find((c) => t >= c.start - 0.15 && t <= c.end + 0.3);
+  subEl.textContent = cue ? cue.text : "";
+  subEl.style.opacity = cue ? Math.min(clamp((t - cue.start + 0.15) / 0.25), clamp((cue.end + 0.3 - t) / 0.25)) : 0;
+  subEl.style.background = dark ? "rgba(255,255,255,.12)" : "rgba(255,255,255,.86)";
+  subEl.style.color = dark ? "#fff" : "#0c0c0c";
+  document.body.style.opacity = 1 - clamp((t - (TL.total - 0.8)) / 0.8);
+};
+if (!location.search.includes("render")) {
+  const t0 = performance.now(), start = Number(new URLSearchParams(location.search).get("t") || 0);
+  (function loop() { window.renderAt(((performance.now() - t0) / 1000 + start) % TL.total); requestAnimationFrame(loop); })();
+}
+</script>
+</body>
+</html>
