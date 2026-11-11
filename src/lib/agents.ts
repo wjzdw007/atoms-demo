@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { config as appConfig } from "./config";
 import { checkHtml, extractHtml } from "./html";
+import { checkScripts } from "./syntax";
 import { mockHtml, mockPlan } from "./mock";
 import type { AgentEvent } from "./types";
 
@@ -280,7 +281,9 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
     let html = extractHtml(rawCode);
 
     // 3. Reviewer: read the code against the request; blocking findings get one fix pass.
+    // Scripts that do not even parse are added to the findings as fact, whatever the reviewer says.
     let review: Review | null = null;
+    const broken = checkScripts(html);
     if (reviewMode !== "off") {
       yield { type: "stage", agent: "reviewer", status: "start" };
       let rawReview = "";
@@ -300,7 +303,8 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
         rawReview += delta;
         yield { type: "review", delta };
       }
-      const parsed = parseReview(rawReview);
+      const read = parseReview(rawReview);
+      const parsed = { passed: read.passed && broken.length === 0, findings: [...broken, ...read.findings] };
       review = { ...parsed, fixed: false };
       yield {
         type: "stage",
@@ -332,8 +336,9 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
           yield { type: "code", delta };
         }
         const fixedHtml = extractHtml(fixedRaw);
-        // Only accept the rewrite if it is a complete document; otherwise keep the reviewed draft.
-        if (checkHtml(fixedHtml).length === 0) {
+        // Only accept the rewrite if it is a complete document that parses no worse than the
+        // reviewed draft; otherwise keep the draft.
+        if (checkHtml(fixedHtml).length === 0 && checkScripts(fixedHtml).length <= broken.length) {
           html = fixedHtml;
           review.fixed = true;
         } else {
@@ -349,14 +354,14 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
       }
     }
 
-    // 4. QA: cheap structural checks on what will be saved.
+    // 4. QA: structure and script syntax of what will be saved.
     yield { type: "stage", agent: "qa", status: "start" };
-    const issues = checkHtml(html);
+    const issues = [...checkHtml(html), ...checkScripts(html)];
     yield {
       type: "stage",
       agent: "qa",
       status: "done",
-      note: issues.length ? issues.join("；") : "结构检查通过",
+      note: issues.length ? issues.join("；") : "结构与脚本语法检查通过",
     };
     return { plan, title, html, issues, review };
   } catch (error) {

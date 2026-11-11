@@ -2,15 +2,18 @@ import { createClient, type Client, type InArgs } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 
 /**
- * One driver for both environments:
- * - local / single-server: a SQLite file (default `file:./data/atoms.db`)
- * - serverless: a hosted libSQL database (DATABASE_URL=libsql://..., DATABASE_AUTH_TOKEN)
+ * One driver for two kinds of storage:
+ * - a SQLite file on the server's own disk (default `file:./data/atoms.db`)
+ * - a hosted libSQL database (DATABASE_URL=libsql://..., DATABASE_AUTH_TOKEN), for when the disk
+ *   is not durable
+ *
+ * Either way the app itself needs a long-running process (see jobs.ts), so a hosted database
+ * does not make it fit for serverless functions.
  */
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     email TEXT UNIQUE,
-    password_hash TEXT,
     name TEXT NOT NULL,
     is_guest INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
@@ -103,6 +106,24 @@ const SCHEMA = [
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (ip_hash, day)
   )`,
+  // One row per generation job. The live event log stays in memory (jobs.ts); this row exists so
+  // a job that was cut off by a restart can be found afterwards and its charges given back.
+  `CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    charges TEXT NOT NULL,
+    charged_on TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, started_at)`,
+  `CREATE TABLE IF NOT EXISTS schema_migrations (
+    id TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS usage (
     user_id TEXT NOT NULL,
     day TEXT NOT NULL,
@@ -111,12 +132,56 @@ const SCHEMA = [
   )`,
 ];
 
-const MIGRATIONS = [
-  // Bumped to invalidate every existing session of a user (logout, credential change).
-  "ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0",
-  // Set once the account's email has been proven through Google sign-in.
-  "ALTER TABLE users ADD COLUMN google_linked INTEGER NOT NULL DEFAULT 0",
+/**
+ * Changes to tables that already exist. Each one runs once and is recorded in
+ * `schema_migrations`; a failure stops startup instead of being ignored. `needed` lets a
+ * migration skip databases where there is nothing to do (a fresh schema, or a database that got
+ * the change before migrations were recorded).
+ *
+ * Keep migrations compatible with the previous release, so rolling the code back stays safe:
+ * add columns freely, but stop using a column in one release and drop it in a later one.
+ */
+type Migration = { id: string; sql: string; needed: (client: Client) => Promise<boolean> };
+
+async function hasColumn(client: Client, table: string, column: string) {
+  const res = await client.execute(`PRAGMA table_info(${table})`);
+  return res.rows.some((row) => row.name === column);
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    // Bumped to invalidate every existing session of a user (logout, credential change).
+    id: "001_users_session_version",
+    sql: "ALTER TABLE users ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0",
+    needed: async (client) => !(await hasColumn(client, "users", "session_version")),
+  },
+  {
+    // Set once the account's email has been proven through Google sign-in.
+    id: "002_users_google_linked",
+    sql: "ALTER TABLE users ADD COLUMN google_linked INTEGER NOT NULL DEFAULT 0",
+    needed: async (client) => !(await hasColumn(client, "users", "google_linked")),
+  },
+  {
+    // Password sign-in is gone; databases created back then still have the column. Erase the
+    // hashes now. The column itself is no longer read and can be dropped in a later release.
+    id: "003_clear_password_hashes",
+    sql: "UPDATE users SET password_hash = NULL WHERE password_hash IS NOT NULL",
+    needed: (client) => hasColumn(client, "users", "password_hash"),
+  },
 ];
+
+export async function migrate(client: Client) {
+  for (const stmt of SCHEMA) await client.execute(stmt);
+  const done = new Set((await client.execute("SELECT id FROM schema_migrations")).rows.map((row) => String(row.id)));
+  for (const migration of MIGRATIONS) {
+    if (done.has(migration.id)) continue;
+    if (await migration.needed(client)) await client.execute(migration.sql);
+    await client.execute({
+      sql: "INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+      args: [migration.id, Date.now()],
+    });
+  }
+}
 
 const globalForDb = globalThis as unknown as {
   __atomsDb?: { client: Client; ready: Promise<void> };
@@ -126,11 +191,7 @@ function init() {
   const url = process.env.DATABASE_URL || "file:./data/atoms.db";
   if (url.startsWith("file:./data/")) mkdirSync("./data", { recursive: true });
   const client = createClient({ url, authToken: process.env.DATABASE_AUTH_TOKEN });
-  const ready = (async () => {
-    for (const stmt of SCHEMA) await client.execute(stmt);
-    // Additive column migrations; "duplicate column" just means it already ran.
-    for (const stmt of MIGRATIONS) await client.execute(stmt).catch(() => {});
-  })();
+  const ready = migrate(client);
   return { client, ready };
 }
 

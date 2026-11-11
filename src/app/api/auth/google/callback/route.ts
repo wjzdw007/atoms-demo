@@ -27,19 +27,17 @@ export async function GET(request: Request) {
     redirect("/login?error=google_failed");
   }
 
-  const existing = await queryOne<{ id: string; google_linked: number; password_hash: string | null }>(
-    "SELECT id, google_linked, password_hash FROM users WHERE email = ?",
+  const existing = await queryOne<{ id: string; google_linked: number }>(
+    "SELECT id, google_linked FROM users WHERE email = ?",
     [email],
   );
   if (existing) {
     if (!existing.google_linked) {
-      // Registration does not verify email ownership, so someone else may have signed up with this
-      // address and a password of their own. Google has now proven who owns it: drop that
-      // password and every session issued under it before letting the real owner in.
-      await run(
-        "UPDATE users SET google_linked = 1, password_hash = NULL, session_version = session_version + 1 WHERE id = ?",
-        [existing.id],
-      );
+      // An account from the time of password sign-up, which never verified who owns the address.
+      // Google has now proven the owner: end every session issued before letting them in.
+      await run("UPDATE users SET google_linked = 1, session_version = session_version + 1 WHERE id = ?", [
+        existing.id,
+      ]);
     }
     await startSession(existing.id);
   } else {

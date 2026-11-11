@@ -71,7 +71,7 @@ export async function POST(request: Request, ctx: Params) {
       : jsonError("今日免费次数已用完，积分余额也不足。可以到「额度」页补充积分，或明天再来。", 402);
   }
 
-  const outcome = startJob({
+  const outcome = await startJob({
     projectId: project.id,
     userId: user.id,
     projectTitle: project.title,

@@ -1,0 +1,11 @@
+# Copies the SQLite database to ~/atoms-demo/backups (see scripts/backup.mjs). Run by the timer
+# next to this file; `scripts/setup.sh` installs both. To take a backup right now:
+#   sudo systemctl start atoms-demo-backup
+[Unit]
+Description=Atoms Demo database backup
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/atoms-demo/current
+ExecStart=/home/ubuntu/atoms-demo/node/bin/node --env-file-if-exists=.env.local scripts/backup.mjs /home/ubuntu/atoms-demo/backups

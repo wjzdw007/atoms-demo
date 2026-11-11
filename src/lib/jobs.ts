@@ -1,7 +1,8 @@
 import { engineerStage, planStage, ProviderError, runAgents } from "./agents";
 import { checkHtml } from "./html";
 import { config } from "./config";
-import { run } from "./db";
+import { nanoid } from "nanoid";
+import { query, run } from "./db";
 import {
   addMessage,
   addVersion,
@@ -21,12 +22,17 @@ import type { AgentEvent, JobSnapshot } from "./types";
  * Closing the tab, navigating away or losing the connection does not stop a job; any number of
  * clients can attach later and replay its events from the beginning.
  *
- * Jobs live in memory, which fits the single-server deployment this app targets. A multi-instance
- * or serverless deployment would move the event log to a shared store (Redis streams, a DB table).
+ * The event log lives in memory, which fits the single-server deployment this app targets. A
+ * multi-instance deployment would move it to a shared store (Redis streams, a DB table).
+ *
+ * Each job also has a row in the `jobs` table holding what it was charged. A restart loses the
+ * running jobs themselves, but on the next start `recoverInterruptedJobs` finds their rows, gives
+ * the charges back and tells the user in the project's chat.
  */
 export type RaceLane = { model: string; label: string; charge: ChargeSource };
 
 type Job = {
+  id: string;
   projectId: string;
   userId: string;
   prompt: string;
@@ -68,7 +74,7 @@ export function cancelJob(projectId: string, userId: string) {
  * own the project and charged the generation; if this does not return "started" the caller
  * refunds that charge.
  */
-export function startJob(opts: {
+export async function startJob(opts: {
   projectId: string;
   userId: string;
   projectTitle: string;
@@ -84,6 +90,7 @@ export function startJob(opts: {
   if (running.filter((j) => j.userId === opts.userId).length >= limits.maxConcurrentPerUser) return "user_limit" as const;
   if (running.length >= limits.maxConcurrent) return "server_limit" as const;
   const job: Job = {
+    id: nanoid(),
     projectId: opts.projectId,
     userId: opts.userId,
     prompt: opts.prompt,
@@ -93,9 +100,74 @@ export function startJob(opts: {
     controller: new AbortController(),
     listeners: new Set(),
   };
+  // Claim the project's slot before the first await, so two requests cannot both start a job.
   jobs.set(opts.projectId, job);
+  try {
+    const charges = opts.race ? opts.race.map((lane) => lane.charge) : [opts.charge];
+    await run(
+      `INSERT INTO jobs (id, project_id, user_id, prompt, charges, charged_on, status, started_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+      [job.id, job.projectId, job.userId, job.prompt, JSON.stringify(charges), usageDay(), job.startedAt],
+    );
+  } catch (error) {
+    jobs.delete(opts.projectId);
+    console.error("Could not record the job:", error instanceof Error ? error.message : error);
+    return "server_limit" as const;
+  }
   void (opts.race ? executeRace(job, opts.race) : execute(job, opts));
   return "started" as const;
+}
+
+type Outcome = "done" | "failed" | "cancelled";
+
+/** Closes the job's row. From here on a restart has nothing to give back for it. */
+function recordOutcome(job: Job, outcome: Outcome) {
+  return run("UPDATE jobs SET status = ?, finished_at = ? WHERE id = ? AND status = 'running'", [
+    outcome,
+    Date.now(),
+    job.id,
+  ]).catch((error) => console.error("Could not close the job record:", error instanceof Error ? error.message : error));
+}
+
+export function runningJobCount() {
+  return [...jobs.values()].filter((job) => job.running).length;
+}
+
+const INTERRUPTED_NOTE = "服务刚刚重启，这次生成被中断了，本次额度已退还，请重新发送一次。";
+
+/**
+ * Runs once when the server starts. Any job row still marked running belongs to a process that
+ * is gone: give its charges back and leave a note in the project's chat. Claiming the row with a
+ * conditional update makes the refund happen at most once.
+ */
+export async function recoverInterruptedJobs() {
+  const rows = await query<{ id: string; project_id: string; user_id: string; charges: string; charged_on: string }>(
+    "SELECT id, project_id, user_id, charges, charged_on FROM jobs WHERE status = 'running'",
+  );
+  let recovered = 0;
+  for (const row of rows) {
+    // Not stale: this very process is running it (the dev server can register more than once).
+    if (jobs.get(row.project_id)?.id === row.id) continue;
+    const claim = await run("UPDATE jobs SET status = 'interrupted', finished_at = ? WHERE id = ? AND status = 'running'", [
+      Date.now(),
+      row.id,
+    ]);
+    if (claim.rowsAffected === 0) continue;
+    let charges: ChargeSource[] = [];
+    try {
+      charges = JSON.parse(row.charges);
+    } catch {
+      /* unreadable row: nothing to refund */
+    }
+    for (const source of charges) await refundGeneration(row.user_id, source, row.charged_on);
+    if (await getOwnedProject(row.project_id, row.user_id)) {
+      await addMessage(row.project_id, "assistant", INTERRUPTED_NOTE);
+    }
+    recovered++;
+  }
+  // Finished rows are only kept for a while, as a trace of what ran.
+  await run("DELETE FROM jobs WHERE status != 'running' AND started_at < ?", [Date.now() - 30 * 24 * 3600 * 1000]);
+  return recovered;
 }
 
 async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSource; model?: string }) {
@@ -106,6 +178,7 @@ async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSou
   // (no usable HTML, output too large, cancel, timeout) still used the model and are not refunded;
   // otherwise a crafted prompt would get unlimited free model output.
   let refund = false;
+  let outcome: Outcome = "failed";
   const chargedOn = usageDay();
   try {
     const [latest, messages] = await Promise.all([getLatestVersion(projectId), listMessages(projectId)]);
@@ -153,6 +226,7 @@ async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSou
     }
     if (result.issues.length) notes.push(`⚠️ 质检提示：${result.issues.join("；")}`);
     const message = await addMessage(projectId, "assistant", [result.plan, ...notes].join("\n\n"), version.id);
+    outcome = "done";
     emit(job, { type: "done", version, message, title });
   } catch (error) {
     const stillThere = await getOwnedProject(projectId, userId).catch(() => null);
@@ -160,6 +234,7 @@ async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSou
     if (signal.aborted) {
       const timedOut = signal.reason instanceof Error && signal.reason.message === "timeout";
       const text = timedOut ? "生成超时，已自动停止。" : "已停止生成，本次结果没有保存。";
+      if (!timedOut) outcome = "cancelled";
       await note(text);
       emit(job, timedOut ? { type: "error", message: text } : { type: "cancelled" });
     } else {
@@ -172,6 +247,7 @@ async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSou
   } finally {
     clearTimeout(timeout);
     if (refund) await refundGeneration(userId, opts.charge, chargedOn).catch(() => {});
+    await recordOutcome(job, outcome);
     job.running = false;
     for (const notify of job.listeners) notify();
     // Keep the finished job briefly so a client that was mid-reconnect still gets the ending.
@@ -240,6 +316,7 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
   const chargedOn = usageDay();
   // Same refund rule as a normal run, applied per lane: only provider-side failures are refunded.
   const refunds = new Set<number>();
+  let outcome: Outcome = "failed";
   try {
     const [latest, messages] = await Promise.all([getLatestVersion(projectId), listMessages(projectId)]);
     const history = messages
@@ -306,6 +383,7 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
       .map((e) => (e.html ? `- ${e.label}：${e.seconds} 秒` : `- ${e.label}：失败（${e.error}）`))
       .join("\n");
     const message = await addMessage(projectId, "assistant", `${shared.plan}\n\n🏁 竞速完成，请在右侧挑一版保留：\n${board}`);
+    outcome = "done";
     emit(job, { type: "race_done", candidates, message });
   } catch (error) {
     const stillThere = await getOwnedProject(projectId, userId).catch(() => null);
@@ -313,6 +391,7 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
     if (signal.aborted) {
       const timedOut = signal.reason instanceof Error && signal.reason.message === "timeout";
       const text = timedOut ? "竞速超时，已自动停止。" : "已停止竞速，本次结果没有保存。";
+      if (!timedOut) outcome = "cancelled";
       await note(text);
       emit(job, timedOut ? { type: "error", message: text } : { type: "cancelled" });
     } else {
@@ -324,6 +403,7 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
   } finally {
     clearTimeout(timeout);
     for (const i of refunds) await refundGeneration(userId, lanes[i].charge, chargedOn).catch(() => {});
+    await recordOutcome(job, outcome);
     job.running = false;
     for (const notify of job.listeners) notify();
     setTimeout(() => {

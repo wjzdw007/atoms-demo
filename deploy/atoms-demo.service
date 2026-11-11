@@ -1,5 +1,9 @@
-# systemd unit for the app. Copy to /etc/systemd/system/atoms-demo.service and adjust the paths
-# and user. The app listens on localhost only; nginx terminates TLS in front of it.
+# systemd unit for the app. `scripts/setup.sh` installs it with the paths, user and port filled
+# in; to install by hand, copy it to /etc/systemd/system/atoms-demo.service and adjust those.
+# The app listens on localhost only; nginx terminates TLS in front of it.
+#
+# `current` is a symlink to the release being served (see scripts/release.sh). systemd resolves it
+# when the service starts, so every deploy ends with a restart.
 #
 # The sandboxing below matters: the app never executes generated code on the server, but if it
 # were ever compromised these settings keep the process from escalating (sudo), reading SSH keys,
@@ -10,7 +14,7 @@ After=network.target
 
 [Service]
 User=ubuntu
-WorkingDirectory=/home/ubuntu/atoms-demo/app
+WorkingDirectory=/home/ubuntu/atoms-demo/current
 Environment=NODE_ENV=production
 ExecStart=/home/ubuntu/atoms-demo/node/bin/node node_modules/next/dist/bin/next start -p 3100 -H 127.0.0.1
 Restart=always
@@ -21,8 +25,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
-ReadWritePaths=/home/ubuntu/atoms-demo/app/data /home/ubuntu/atoms-demo/app/.next
-InaccessiblePaths=-/home/ubuntu/.ssh -/home/ubuntu/atoms-demo/relay
+ReadWritePaths=/home/ubuntu/atoms-demo/shared/data /home/ubuntu/atoms-demo/current/.next
+InaccessiblePaths=-/home/ubuntu/.ssh -/home/ubuntu/atoms-demo/relay -/home/ubuntu/atoms-demo/backups
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes

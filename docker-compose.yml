@@ -1,0 +1,16 @@
+# cp .env.example .env.local, set AUTH_SECRET (openssl rand -hex 32) and LLM_API_KEY, then:
+#   docker compose up -d --build
+# The app is published on localhost only; put a TLS reverse proxy in front for public use (see
+# deploy/nginx.conf.example). To try it over plain http, also set ALLOW_HTTP=1 in .env.local.
+services:
+  atoms:
+    build: .
+    restart: unless-stopped
+    env_file: .env.local
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - atoms-data:/app/data
+
+volumes:
+  atoms-data:
