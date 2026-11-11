@@ -721,7 +721,8 @@ export function Workspace({
               代码
             </button>
             <div className="flex-1" />
-            {tab === "preview" ? (
+            {/* These act on the single app; in a race each lane shows its own preview or code. */}
+            {race ? null : tab === "preview" ? (
               <>
                 <button onClick={() => setDevice("desktop")} className={chip(device === "desktop")}>
                   桌面
@@ -811,7 +812,9 @@ export function Workspace({
                         </span>
                       </div>
                       <div className="min-h-0 flex-1">
-                        {lane.failed ? (
+                        {tab === "code" && lane.code ? (
+                          <pre className="scroll-thin h-full overflow-auto p-3 font-mono text-xs leading-relaxed text-ink/90">{lane.code}</pre>
+                        ) : lane.failed ? (
                           <div className="flex h-full items-center justify-center p-4 text-center text-xs text-bad">{lane.note}</div>
                         ) : lane.html ? (
                           <PreviewFrame html={lane.html} appId={project.id} streaming={!lane.done} ephemeral />
@@ -895,9 +898,30 @@ function AssistantMessage({
   version?: VersionMeta;
   onView: (id: string) => void;
 }) {
+  // What this message reports, so the outcome is readable at a glance instead of buried in the text.
+  const text = message.content;
+  const outcome = version
+    ? { label: `已完成 · 保存为 v${version.number}`, tone: "bg-[#dcf5e6] text-good", icon: "✓" }
+    : text.includes("🏁 竞速完成")
+      ? { label: "竞速完成 · 在右侧挑一版保留", tone: "bg-[#fff1d6] text-warn", icon: "🏁" }
+      : /^(生成失败|竞速失败|竞速超时|生成超过|已停止|服务刚刚重启)/.test(text)
+        ? { label: "这次没有生成出新版本", tone: "bg-raised text-muted", icon: "!" }
+        : null;
+  const time = new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   return (
     <div className="rounded-2xl rounded-bl-md border border-line bg-panel px-3.5 py-2.5 text-sm">
-      <div className="whitespace-pre-wrap leading-relaxed">{message.content}</div>
+      {outcome && (
+        <div className="mb-2 flex items-center gap-2 text-xs">
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ${outcome.tone}`}>
+            <span aria-hidden>{outcome.icon}</span>
+            {outcome.label}
+          </span>
+          <time className="ml-auto text-muted" suppressHydrationWarning>
+            {time}
+          </time>
+        </div>
+      )}
+      <div className="whitespace-pre-wrap leading-relaxed">{text}</div>
       {version && (
         <button
           onClick={() => onView(version.id)}
