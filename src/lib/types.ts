@@ -36,7 +36,9 @@ export type AgentName = "planner" | "engineer" | "reviewer" | "qa";
 /** Events of one generation job, streamed (as NDJSON) to the workspace and replayable on reconnect. */
 export type AgentEvent =
   /** `lane` is set in race mode, where several engineers write at the same time. */
-  | { type: "stage"; agent: AgentName; status: "start" | "done"; note?: string; lane?: number }
+  | { type: "stage"; agent: AgentName; status: "start" | "done"; note?: string; lane?: number; failed?: boolean }
+  /** The model's reasoning before (or between) its output. Shown while it runs, never saved. */
+  | { type: "thinking"; agent: AgentName; delta: string; lane?: number }
   | { type: "plan"; delta: string }
   | { type: "code"; delta: string; lane?: number }
   | { type: "race_start"; lanes: { model: string; label: string }[] }

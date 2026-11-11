@@ -70,6 +70,17 @@ export function cancelJob(projectId: string, userId: string) {
 }
 
 /**
+ * Race mode only: stop waiting for the models that are still writing and keep the entries that
+ * already finished. Outside a race this is the same as a plain stop.
+ */
+export function finishJob(projectId: string, userId: string) {
+  const job = getJob(projectId, userId);
+  if (!job?.running) return false;
+  job.controller.abort(new Error("finish"));
+  return true;
+}
+
+/**
  * Starts a job for a project. The caller has already authenticated the user, checked that they
  * own the project and charged the generation; if this does not return "started" the caller
  * refunds that charge.
@@ -233,7 +244,9 @@ async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSou
     const note = (text: string) => (stillThere ? addMessage(projectId, "assistant", text).catch(() => {}) : null);
     if (signal.aborted) {
       const timedOut = signal.reason instanceof Error && signal.reason.message === "timeout";
-      const text = timedOut ? "生成超时，已自动停止。" : "已停止生成，本次结果没有保存。";
+      const text = timedOut
+        ? `生成超过了 ${Math.round(config().generation.timeoutMs / 60_000)} 分钟的上限，已自动停止。请把需求拆小一些，或换一个更快的模型。`
+        : "已停止生成，本次结果没有保存。";
       if (!timedOut) outcome = "cancelled";
       await note(text);
       emit(job, timedOut ? { type: "error", message: text } : { type: "cancelled" });
@@ -317,6 +330,10 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
   // Same refund rule as a normal run, applied per lane: only provider-side failures are refunded.
   const refunds = new Set<number>();
   let outcome: Outcome = "failed";
+  const reason = () => (signal.aborted && signal.reason instanceof Error ? signal.reason.message : "");
+  const timedOut = () => reason() === "timeout";
+  /** Ended before every lane finished, but in a way that keeps the finished ones. */
+  const cutShort = () => timedOut() || reason() === "finish";
   try {
     const [latest, messages] = await Promise.all([getLatestVersion(projectId), listMessages(projectId)]);
     const history = messages
@@ -353,9 +370,16 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
           const engineer = engineerStage({ ...input, ...shared, model: lane.model });
           let step = await engineer.next();
           while (!step.done) {
-            emit(job, { type: "code", delta: step.value, lane: i });
+            emit(
+              job,
+              typeof step.value === "string"
+                ? { type: "code", delta: step.value, lane: i }
+                : { type: "thinking", agent: "engineer", delta: step.value.thinking, lane: i },
+            );
             step = await engineer.next();
           }
+          // An aborted model stream can end quietly instead of throwing; what it left is not a result.
+          if (signal.aborted) throw new Error("aborted");
           html = step.value;
           const problems = checkHtml(html);
           if (problems.length) {
@@ -363,16 +387,32 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
             html = "";
           }
         } catch (e) {
-          if (signal.aborted) throw e;
+          // Running out of time, or the user not waiting any longer, only fails the lanes that
+          // were still writing: the ones that already finished are kept. A plain stop ends the race.
+          if (signal.aborted && !cutShort()) throw e;
           if (e instanceof ProviderError) refunds.add(i);
-          error = e instanceof Error ? e.message : "生成失败";
+          html = "";
+          error = timedOut()
+            ? `超过 ${Math.round(config().generation.timeoutMs / 60_000)} 分钟还没写完`
+            : cutShort()
+              ? "还没写完，你选择了不再等它"
+              : e instanceof Error
+                ? e.message
+                : "生成失败";
         }
         const seconds = Math.round((Date.now() - started) / 100) / 10;
-        emit(job, { type: "stage", agent: "engineer", status: "done", lane: i, note: error ?? `${seconds} 秒` });
+        emit(job, {
+          type: "stage",
+          agent: "engineer",
+          status: "done",
+          lane: i,
+          note: error ?? `${seconds} 秒`,
+          failed: Boolean(error),
+        });
         return { lane: i, model: lane.model, label: lane.label, seconds, html, error };
       }),
     );
-    if (signal.aborted) throw new Error("aborted");
+    if (signal.aborted && !cutShort()) throw new Error("aborted");
     if (!(await getOwnedProject(projectId, userId))) throw new Error("项目已被删除。");
 
     if (entries.every((e) => !e.html)) {
@@ -388,12 +428,12 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
   } catch (error) {
     const stillThere = await getOwnedProject(projectId, userId).catch(() => null);
     const note = (text: string) => (stillThere ? addMessage(projectId, "assistant", text).catch(() => {}) : null);
-    if (signal.aborted) {
-      const timedOut = signal.reason instanceof Error && signal.reason.message === "timeout";
-      const text = timedOut ? "竞速超时，已自动停止。" : "已停止竞速，本次结果没有保存。";
-      if (!timedOut) outcome = "cancelled";
+    // A timeout that left no usable entry arrives here as an ordinary error naming each lane.
+    if (signal.aborted && !(error instanceof Error && error.message.startsWith("几个模型都没有"))) {
+      const text = timedOut() ? "竞速超时，已自动停止，没有模型写完。" : "已停止竞速，本次结果没有保存。";
+      if (!timedOut()) outcome = "cancelled";
       await note(text);
-      emit(job, timedOut ? { type: "error", message: text } : { type: "cancelled" });
+      emit(job, timedOut() ? { type: "error", message: text } : { type: "cancelled" });
     } else {
       const text = error instanceof Error ? error.message : "生成失败";
       console.error(`Race failed for project ${projectId}:`, text);

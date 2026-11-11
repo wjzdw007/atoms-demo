@@ -117,7 +117,7 @@ Billing ─ POST /api/billing/orders（下单）→ 管理员 POST /api/admin/or
 | `LLM_API_KEY` / `LLM_BASE_URL` | 无 / TokenHub | 模型服务；不填密钥进入演示模式 |
 | `LLM_MODEL` | `glm-5.3` | 写代码的默认模型 |
 | `LLM_MODELS` | 仅默认模型 | 用户可选模型的白名单，`id=名称` 用逗号分隔 |
-| `LLM_REASONING_EFFORT` | `low` | 推理强度；`low` 时几秒内开始出代码。DeepSeek 系列改为直接关闭推理（`LLM_NO_THINKING_MODELS`） |
+| `LLM_REASONING_EFFORT` | `low` | 推理强度；`low` 时几秒内开始出代码。DeepSeek 系列和 GLM-5.2 不理会这个设置，改为直接关闭推理（`LLM_NO_THINKING_MODELS`） |
 | `REVIEW_MODE` | `fix` | `off` 关闭评审，`report` 只报告，`fix` 自动修复一轮 |
 | `AUTH_SECRET` | 无 | 会话签名密钥，生产环境必填 |
 | `LLM_FREE_MODEL` | 无 | 设置后，免费次数只能用于这些模型（逗号分隔），其他模型每次消耗 1 积分 |

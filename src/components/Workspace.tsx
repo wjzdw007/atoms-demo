@@ -20,10 +20,35 @@ const AGENTS: { key: AgentName; name: string; role: string; doing: string }[] = 
 ];
 
 type StageState = Partial<Record<AgentName, { status: "start" | "done"; note?: string }>>;
-type Run = { plan: string; code: string; review: string; stages: StageState; startedAt: number };
+/** The tail of what a model is reasoning about right now; gone as soon as it starts answering. */
+type Thinking = { agent: AgentName; text: string; chars: number };
+type Run = {
+  plan: string;
+  code: string;
+  review: string;
+  stages: StageState;
+  startedAt: number;
+  thinking: Thinking | null;
+  /** When the server last sent anything, to tell "slow" from "silent". */
+  lastEventAt: number;
+};
+const THINKING_TAIL = 1500;
+const hasBody = (code: string) => /<body[\s>]/i.test(code);
 type ProjectInfo = { id: string; title: string; publishedSlug: string | null; publishedVersionId: string | null };
 /** One entry of a race as shown in the workspace: streaming first, then waiting to be kept. */
-type RaceLaneView = { model: string; label: string; code: string; html: string; done: boolean; note?: string; id?: string; failed?: boolean };
+type RaceLaneView = {
+  model: string;
+  label: string;
+  code: string;
+  html: string;
+  done: boolean;
+  note?: string;
+  id?: string;
+  failed?: boolean;
+  /** Reasoning shown until the first line of code arrives. */
+  thinking?: string;
+  thinkingChars?: number;
+};
 const laneFromCandidate = (c: RaceCandidate): RaceLaneView => ({
   model: c.model,
   label: c.label,
@@ -89,7 +114,8 @@ export function Workspace({
   /** A past version being inspected; null means "showing the latest". */
   const [viewing, setViewing] = useState<{ version: VersionMeta; html: string } | null>(null);
   const [run, setRun] = useState<Run | null>(
-    initialJob ? { plan: "", code: "", review: "", stages: {}, startedAt: initialJob.startedAt } : null,
+    initialJob ? { plan: "", code: "", review: "", stages: {}, startedAt: initialJob.startedAt, thinking: null, lastEventAt: initialJob.startedAt }
+      : null,
   );
   const [liveHtml, setLiveHtml] = useState("");
   const [input, setInput] = useState("");
@@ -142,7 +168,7 @@ export function Workspace({
       if (attachedRef.current) return;
       const controller = new AbortController();
       attachedRef.current = controller;
-      const current: Run = { plan: "", code: "", review: "", stages: {}, startedAt };
+      const current: Run = { plan: "", code: "", review: "", stages: {}, startedAt, thinking: null, lastEventAt: Date.now() };
       setRun({ ...current });
       let seen = 0;
       let ended = false;
@@ -152,6 +178,27 @@ export function Workspace({
 
       const handle = (event: AgentEvent) => {
         seen++;
+        current.lastEventAt = Date.now();
+        if (event.type === "thinking") {
+          if (event.lane !== undefined) {
+            const lane = lanes[event.lane];
+            if (!lane) return;
+            lane.thinking = ((lane.thinking ?? "") + event.delta).slice(-THINKING_TAIL);
+            lane.thinkingChars = (lane.thinkingChars ?? 0) + event.delta.length;
+            setRace([...lanes]);
+            return;
+          }
+          const before = current.thinking?.agent === event.agent ? current.thinking : null;
+          current.thinking = {
+            agent: event.agent,
+            text: ((before?.text ?? "") + event.delta).slice(-THINKING_TAIL),
+            chars: (before?.chars ?? 0) + event.delta.length,
+          };
+          setRun({ ...current });
+          return;
+        }
+        // Anything else from the pipeline means the model has moved on from reasoning.
+        if (event.type !== "code" || event.lane === undefined) current.thinking = null;
         if (event.type === "race_start") {
           lanes = event.lanes.map((l) => ({ ...l, code: "", html: "", done: false }));
           current.stages = { ...current.stages, engineer: { status: "start", note: `${lanes.length} 个模型同时编写` } };
@@ -160,6 +207,8 @@ export function Workspace({
           const lane = lanes[event.lane];
           if (lane && event.status === "done") {
             lane.done = true;
+            lane.failed = event.failed;
+            lane.thinking = undefined;
             lane.note = event.note;
             lane.html = extractHtml(lane.code);
             setRace([...lanes]);
@@ -167,10 +216,12 @@ export function Workspace({
         } else if (event.type === "code" && event.lane !== undefined) {
           const lane = lanes[event.lane];
           if (lane) {
+            lane.thinking = undefined;
             lane.code += event.delta;
             if (Date.now() - (lanePreview[event.lane] ?? 0) > PREVIEW_INTERVAL * 2) {
               lanePreview[event.lane] = Date.now();
-              lane.html = extractHtml(lane.code);
+              // Until the body starts there is nothing to see: a preview now would be a blank page.
+              if (hasBody(lane.code)) lane.html = extractHtml(lane.code);
               setRace([...lanes]);
             }
           }
@@ -193,7 +244,7 @@ export function Workspace({
           current.code += event.delta;
           if (Date.now() - lastPreview > PREVIEW_INTERVAL) {
             lastPreview = Date.now();
-            setLiveHtml(extractHtml(current.code));
+            if (hasBody(current.code)) setLiveHtml(extractHtml(current.code));
           }
         } else if (event.type === "done") {
           ended = true;
@@ -363,6 +414,11 @@ export function Workspace({
 
   async function stop() {
     await fetch(`/api/projects/${project.id}/generate`, { method: "DELETE" }).catch(() => null);
+  }
+
+  /** Race mode: stop waiting for the slower models and choose among the finished ones. */
+  async function finishRace() {
+    await fetch(`/api/projects/${project.id}/generate?finish=1`, { method: "DELETE" }).catch(() => null);
   }
 
   async function rename(next: string) {
@@ -574,7 +630,7 @@ export function Workspace({
                 />
               ),
             )}
-            {busy && <RunCard run={run} />}
+            {busy && <RunCard run={run} racing={Boolean(race)} />}
             {error && (
               <div className="rounded-lg border border-bad/40 bg-bad/10 px-3 py-2 text-sm text-bad">
                 {error}
@@ -722,6 +778,15 @@ export function Workspace({
                 <div className="flex shrink-0 items-center gap-3 border-b border-line bg-accent-soft px-3 py-1.5 text-xs">
                   <span className="font-medium">🏁 竞速模式</span>
                   <span className="text-muted">{busy ? "几个模型正在同时构建…" : "都可以直接试用。挑一版保留，其余会被丢弃。"}</span>
+                  {busy && race.some((lane) => lane.done && !lane.failed) && race.some((lane) => !lane.done) && (
+                    <button
+                      onClick={finishRace}
+                      title="还在写的模型会被放弃，它们用掉的额度不退"
+                      className="ml-auto rounded-full border border-accent bg-panel px-2.5 py-0.5 font-medium text-accent hover:bg-accent hover:text-white"
+                    >
+                      不等了，从写完的里挑
+                    </button>
+                  )}
                   {!busy && (
                     <button onClick={dismissRace} className="ml-auto text-muted hover:text-bad">
                       都不要
@@ -734,15 +799,32 @@ export function Workspace({
                       <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2 text-xs">
                         <span className="truncate font-medium">{lane.label}</span>
                         <span className={`ml-auto shrink-0 ${lane.failed ? "text-bad" : lane.done ? "text-good" : "text-muted"}`}>
-                          {lane.failed ? "失败" : lane.done ? `完成 · ${lane.note ?? ""}` : `${lane.code.length.toLocaleString()} 字符`}
+                          {lane.failed
+                            ? "失败"
+                            : lane.done
+                              ? `完成 · ${lane.note ?? ""}`
+                              : lane.code
+                                ? `${lane.code.length.toLocaleString()} 字符`
+                                : lane.thinking
+                                  ? `思考中 · ${(lane.thinkingChars ?? 0).toLocaleString()} 字`
+                                  : "等待模型响应"}
                         </span>
                       </div>
                       <div className="min-h-0 flex-1">
-                        {lane.html ? (
+                        {lane.failed ? (
+                          <div className="flex h-full items-center justify-center p-4 text-center text-xs text-bad">{lane.note}</div>
+                        ) : lane.html ? (
                           <PreviewFrame html={lane.html} appId={project.id} streaming={!lane.done} ephemeral />
+                        ) : lane.thinking ? (
+                          <div className="flex h-full flex-col p-4">
+                            <div className="mb-2 shrink-0 text-xs font-medium text-ink">💭 模型正在思考，还没开始写代码</div>
+                            <div className="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
+                              <div className="whitespace-pre-wrap text-xs leading-relaxed text-muted">{lane.thinking}</div>
+                            </div>
+                          </div>
                         ) : (
                           <div className="flex h-full items-center justify-center p-4 text-center text-xs text-muted">
-                            {lane.failed ? lane.note : "正在编写…"}
+                            {lane.code ? "正在编写…" : "等待模型响应…"}
                           </div>
                         )}
                       </div>
@@ -779,7 +861,11 @@ export function Workspace({
                 </div>
               ) : (
                 <div className="flex h-full items-center justify-center text-sm text-muted">
-                  {busy ? "智能体正在工作，应用马上出现在这里…" : "还没有生成应用"}
+                  {!busy
+                    ? "还没有生成应用"
+                    : run?.code
+                      ? `正在写样式和结构（已写 ${run.code.length.toLocaleString()} 字符），页面主体出来后会显示在这里…`
+                      : "智能体正在工作，应用马上出现在这里…"}
                 </div>
               )
             ) : (
@@ -834,7 +920,23 @@ function Elapsed({ since }: { since: number }) {
   return <span suppressHydrationWarning>{seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`}</span>;
 }
 
-function RunCard({ run }: { run: Run }) {
+/** Says so when the server has gone quiet, so a slow model can be told apart from a stuck one. */
+function Quiet({ since }: { since: number }) {
+  const [now, setNow] = useState(since);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.round((now - since) / 1000);
+  if (seconds < 20) return null;
+  return (
+    <p className="mt-3 rounded-lg bg-[#fff1d6] px-2.5 py-1.5 text-xs text-warn" suppressHydrationWarning>
+      模型已经 {seconds} 秒没有新输出。再没有动静会自动停止，并退还这次的额度。
+    </p>
+  );
+}
+
+function RunCard({ run, racing }: { run: Run; racing: boolean }) {
   return (
     <div className="rounded-2xl rounded-bl-md border border-line bg-panel p-3.5 text-sm">
       <div className="mb-3 flex items-center justify-between text-xs text-muted">
@@ -861,7 +963,9 @@ function RunCard({ run }: { run: Run }) {
                 <span className="text-xs text-muted">{agent.role}</span>
                 <span className="ml-auto truncate pl-2 text-xs text-muted">
                   {working
-                    ? stage?.note || agent.doing
+                    ? run.thinking?.agent === agent.key
+                      ? `正在思考 · ${run.thinking.chars.toLocaleString()} 字`
+                      : stage?.note || agent.doing
                     : done
                       ? stage?.note || (agent.key === "engineer" ? `${run.code.length.toLocaleString()} 字符` : "完成")
                       : "等待中"}
@@ -873,10 +977,20 @@ function RunCard({ run }: { run: Run }) {
               {agent.key === "reviewer" && run.review && (
                 <div className="ml-7 mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-muted">{run.review}</div>
               )}
+              {working && run.thinking?.agent === agent.key && (
+                <div className="ml-7 mt-1.5 rounded-lg bg-raised/60 px-2.5 py-1.5">
+                  <div className="mb-0.5 text-[11px] font-medium text-muted">💭 思考过程（还没开始输出）</div>
+                  <div className="flex max-h-24 flex-col justify-end overflow-hidden">
+                    <div className="whitespace-pre-wrap text-xs leading-relaxed text-muted">{run.thinking.text}</div>
+                  </div>
+                </div>
+              )}
             </li>
           );
         })}
       </ul>
+      {/* In a race the lanes report on their own, and their events do not pass through here. */}
+      {!racing && <Quiet key={run.lastEventAt} since={run.lastEventAt} />}
     </div>
   );
 }

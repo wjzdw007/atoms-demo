@@ -1,6 +1,6 @@
 import { getUser, jsonError } from "@/lib/auth";
 import { config } from "@/lib/config";
-import { cancelJob, getJob, startJob, streamJob } from "@/lib/jobs";
+import { cancelJob, finishJob, getJob, startJob, streamJob } from "@/lib/jobs";
 import { clientIpHash } from "@/lib/rate-limit";
 import { chargeGeneration, getOwnedProject, hasStorageRoom, refundGeneration, type ChargeSource } from "@/lib/store";
 
@@ -107,8 +107,11 @@ export async function GET(request: Request, ctx: Params) {
 }
 
 /** Stops the running job. */
-export async function DELETE(_request: Request, ctx: Params) {
+export async function DELETE(request: Request, ctx: Params) {
   const auth = await authorize(ctx);
   if (auth.error) return auth.error;
-  return Response.json({ cancelled: cancelJob(auth.project.id, auth.user.id) });
+  // ?finish=1 (race mode): stop waiting for the slower models but keep the finished entries.
+  const finish = new URL(request.url).searchParams.get("finish") === "1";
+  const stop = finish ? finishJob : cancelJob;
+  return Response.json({ cancelled: stop(auth.project.id, auth.user.id) });
 }

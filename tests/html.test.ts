@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseReview } from "@/lib/agents";
+import { parseReview, plannerRequest } from "@/lib/agents";
 import { checkHtml, extractHtml } from "@/lib/html";
 import { checkScripts } from "@/lib/syntax";
 
@@ -56,5 +56,25 @@ describe("parseReview", () => {
   });
   it("treats a verdict without findings as a pass", () => {
     expect(parseReview("结论：需要修改").passed).toBe(true);
+  });
+});
+
+describe("plannerRequest", () => {
+  it("treats a first message as a new app", () => {
+    expect(plannerRequest("做一个番茄钟", [], false)).toBe("这是一个新应用的需求：\n做一个番茄钟");
+  });
+
+  it("keeps the earlier requests when nothing has been built yet", () => {
+    // The first attempt failed, then the user only says "继续": the plan must still be about 2048.
+    const request = plannerRequest("继续", ["实现一个2048的游戏"], false);
+    expect(request).toContain("- 实现一个2048的游戏");
+    expect(request).toContain("还没有生成出可用的应用");
+    expect(request).toContain("继续");
+  });
+
+  it("asks for a change once there is an app", () => {
+    const request = plannerRequest("加一个深色模式", ["做一个番茄钟"], true);
+    expect(request).toContain("- 做一个番茄钟");
+    expect(request).toContain("这是对已有应用的修改请求：\n加一个深色模式");
   });
 });

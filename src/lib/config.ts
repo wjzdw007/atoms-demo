@@ -61,9 +61,11 @@ function build() {
       reviewerModel: process.env.LLM_REVIEWER_MODEL || "",
       /**
        * Models whose reasoning is switched off entirely (matched against the model id). DeepSeek
-       * on TokenHub ignores a "low" effort and reasons for a minute or more unless told this way.
+       * and GLM-5.2 on TokenHub ignore a "low" effort unless told this way: DeepSeek reasons for a
+       * minute or more, GLM-5.2 for over three minutes per call (measured, 2026-11), which runs a
+       * whole job into the timeout.
        */
-      noThinking: new RegExp(process.env.LLM_NO_THINKING_MODELS || "deepseek", "i"),
+      noThinking: new RegExp(process.env.LLM_NO_THINKING_MODELS || "deepseek|glm-5\\.2", "i"),
       reasoningEffort: oneOf("LLM_REASONING_EFFORT", ["low", "medium", "high"] as const, "low"),
       /** 0 = no artificial cap: ask for the largest output the model accepts. */
       maxTokens: int("LLM_MAX_TOKENS", 0),
@@ -91,8 +93,13 @@ function build() {
       mode: oneOf("REVIEW_MODE", ["off", "report", "fix"] as const, "fix"),
     },
     generation: {
-      /** Hard stop for one generation job, so a stuck model call cannot run forever. */
-      timeoutMs: int("GENERATION_TIMEOUT_SECONDS", 600) * 1000,
+      /**
+       * A model call is given up on once it has sent nothing for this long. This, not the total
+       * time, is what stops a stuck job: a model that is still writing is left to finish.
+       */
+      idleMs: int("GENERATION_IDLE_SECONDS", 120) * 1000,
+      /** Safety ceiling for one whole job, far above what a large app needs. */
+      timeoutMs: int("GENERATION_TIMEOUT_SECONDS", 1800) * 1000,
       /** How long a finished job's events stay available to late subscribers. */
       retainMs: 60_000,
       /** Jobs one user may run at the same time, and the ceiling for the whole server. */
