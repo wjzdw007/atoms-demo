@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ProjectCard } from "@/components/ProjectList";
 
@@ -34,8 +35,34 @@ export function ProjectSidebar({
   open: boolean;
   onClose: () => void;
 }) {
+  const router = useRouter();
   const [search, setSearch] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
   if (!open) return null;
+
+  /** Opens an empty project right here in the workspace; the request is typed in its chat box. */
+  async function createBlank() {
+    if (creating) return;
+    setCreating(true);
+    setError("");
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blank: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "创建失败");
+      if (window.matchMedia("(max-width: 767px)").matches) onClose();
+      router.push(`/project/${data.id}`);
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "创建失败");
+    } finally {
+      setCreating(false);
+    }
+  }
   const term = search.trim().toLowerCase();
   const list = projects
     .map((p) => (p.id === currentId ? { ...p, title: currentTitle } : p))
@@ -57,12 +84,14 @@ export function ProjectSidebar({
           </button>
         </div>
         <div className="shrink-0 space-y-2 p-2">
-          <Link
-            href="/"
-            className="block rounded-lg border border-dashed border-line px-3 py-1.5 text-center text-xs text-ink hover:border-accent hover:text-accent"
+          <button
+            onClick={createBlank}
+            disabled={creating}
+            className="block w-full rounded-lg border border-dashed border-line px-3 py-1.5 text-center text-xs text-ink hover:border-accent hover:text-accent disabled:opacity-50"
           >
-            ＋ 新建项目
-          </Link>
+            {creating ? "正在创建…" : "＋ 新建项目"}
+          </button>
+          {error && <p className="text-xs text-bad">{error}</p>}
           {projects.length > 8 && (
             <input
               type="search"

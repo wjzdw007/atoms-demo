@@ -36,6 +36,19 @@ export async function createProject(userId: string, title: string, remixedFrom: 
   return id;
 }
 
+/** A project nothing has happened in yet: no request, no version, no race waiting for a pick. */
+export async function findBlankProject(userId: string) {
+  const row = await queryOne<{ id: string }>(
+    `SELECT p.id FROM projects p WHERE p.user_id = ?
+       AND NOT EXISTS (SELECT 1 FROM versions v WHERE v.project_id = p.id)
+       AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.project_id = p.id)
+       AND NOT EXISTS (SELECT 1 FROM race_candidates c WHERE c.project_id = p.id)
+     ORDER BY p.updated_at DESC LIMIT 1`,
+    [userId],
+  );
+  return row?.id ?? null;
+}
+
 export function listVersions(projectId: string) {
   return query<VersionMeta>(
     "SELECT id, number, prompt, created_at FROM versions WHERE project_id = ? ORDER BY number ASC",
