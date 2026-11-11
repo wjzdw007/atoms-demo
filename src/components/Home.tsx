@@ -2,10 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IntroVideo } from "@/components/IntroVideo";
 import { MascotRow } from "@/components/Mascot";
-import type { ProjectSummary } from "@/lib/store";
+import {
+  defaultRaceModels,
+  ModelControls,
+  nextRaceModels,
+  RaceLanePicker,
+  savedModel,
+  type ModelChoice,
+  type ModelOption,
+} from "@/components/ModelControls";
+import { ProjectList, type ProjectCard } from "@/components/ProjectList";
 
 const EXAMPLES = [
   { label: "番茄钟", prompt: "做一个番茄钟应用：25 分钟专注 / 5 分钟休息，可以开始、暂停、重置，记录今天完成了几个番茄，并用环形进度条显示剩余时间。" },
@@ -16,15 +25,53 @@ const EXAMPLES = [
 
 export const PENDING_KEY = (id: string) => `atoms:pending:${id}`;
 
-export function Home({ projects, mock }: { projects: ProjectSummary[]; mock: boolean }) {
+export function Home({
+  projects,
+  maxProjects,
+  isGuest,
+  mock,
+  models,
+  raceMax,
+  credits,
+  freeLeft,
+}: {
+  projects: ProjectCard[];
+  maxProjects: number;
+  isGuest: boolean;
+  mock: boolean;
+  /** Models the server allows; the first one is the default. */
+  models: ModelOption[];
+  /** Most models that can race at once; 0 turns race mode off. */
+  raceMax: number;
+  credits: number;
+  /** Free generations left today. */
+  freeLeft: number;
+}) {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [model, setModel] = useState(models[0]?.id ?? "");
+  const [raceOn, setRaceOn] = useState(false);
+  const [raceModels, setRaceModels] = useState<string[]>([]);
+  const pickable = models.length > 1 && !mock;
+  const racing = pickable && raceOn;
+  const raceBlocked = racing && (raceModels.length < 2 || raceModels.length > freeLeft + credits);
+
+  // Restore the model picked last time, if the server still offers it.
+  useEffect(() => {
+    const saved = savedModel(models, credits);
+    if (saved) setTimeout(() => setModel(saved), 0);
+  }, [models, credits]);
+
+  function toggleRace() {
+    if (!raceOn && raceModels.length < 2) setRaceModels(defaultRaceModels(models, credits));
+    setRaceOn((on) => !on);
+  }
 
   async function create(text: string) {
     const value = text.trim();
-    if (!value || busy) return;
+    if (!value || busy || raceBlocked) return;
     setBusy(true);
     setError("");
     try {
@@ -35,19 +82,15 @@ export function Home({ projects, mock }: { projects: ProjectSummary[]; mock: boo
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "创建失败");
-      // The workspace picks this up and starts the first generation immediately.
-      sessionStorage.setItem(PENDING_KEY(data.id), value);
+      // The workspace picks this up and starts the first generation immediately, with the model
+      // (or the racing models) chosen here.
+      const choice: ModelChoice | undefined = racing ? { models: raceModels } : pickable ? { model } : undefined;
+      sessionStorage.setItem(PENDING_KEY(data.id), JSON.stringify({ prompt: value, choice }));
       router.push(`/project/${data.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "创建失败");
       setBusy(false);
     }
-  }
-
-  async function remove(id: string) {
-    if (!confirm("确定删除这个项目吗？所有版本都会被删除。")) return;
-    await fetch(`/api/projects/${id}`, { method: "DELETE" });
-    router.refresh();
   }
 
   return (
@@ -66,6 +109,16 @@ export function Home({ projects, mock }: { projects: ProjectSummary[]; mock: boo
             create(prompt);
           }}
         >
+          {racing && (
+            <RaceLanePicker
+              models={models}
+              credits={credits}
+              raceMax={raceMax}
+              raceModels={raceModels}
+              unitsLeft={freeLeft + credits}
+              onToggle={(id) => setRaceModels((list) => nextRaceModels(list, id, raceMax))}
+            />
+          )}
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -77,13 +130,25 @@ export function Home({ projects, mock }: { projects: ProjectSummary[]; mock: boo
             className="w-full resize-none bg-transparent px-2 py-1 text-base outline-none placeholder:text-muted"
           />
           <div className="flex items-center justify-between gap-3 px-1 pt-2">
-            <span className="text-xs text-muted">{mock ? "演示模式：未配置模型密钥，将使用内置模板" : "⌘/Ctrl + Enter 发送"}</span>
+            {pickable ? (
+              <ModelControls
+                models={models}
+                credits={credits}
+                raceMax={raceMax}
+                raceOn={raceOn}
+                onToggleRace={toggleRace}
+                model={model}
+                onModel={setModel}
+              />
+            ) : (
+              <span className="text-xs text-muted">{mock ? "演示模式：未配置模型密钥，将使用内置模板" : "⌘/Ctrl + Enter 发送"}</span>
+            )}
             <button
               type="submit"
-              disabled={!prompt.trim() || busy}
-              className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-40"
+              disabled={!prompt.trim() || busy || raceBlocked}
+              className="shrink-0 rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-40"
             >
-              {busy ? "正在创建…" : "开始构建"}
+              {busy ? "正在创建…" : racing ? "开始竞速" : "开始构建"}
             </button>
           </div>
         </form>
@@ -94,7 +159,8 @@ export function Home({ projects, mock }: { projects: ProjectSummary[]; mock: boo
           {EXAMPLES.map((example) => (
             <button
               key={example.label}
-              disabled={busy}
+              disabled={busy || raceBlocked}
+              title={racing ? "用竞速模式构建这个例子" : undefined}
               onClick={() => create(example.prompt)}
               className="rounded-full border border-line bg-panel px-3.5 py-1.5 text-sm text-ink hover:border-accent disabled:opacity-40"
             >
@@ -104,32 +170,7 @@ export function Home({ projects, mock }: { projects: ProjectSummary[]; mock: boo
         </div>
       </section>
 
-      {projects.length > 0 && (
-        <section className="mt-16">
-          <h2 className="mb-4 text-sm font-medium text-muted">我的项目</h2>
-          <ul className="grid gap-3 sm:grid-cols-2">
-            {projects.map((project) => (
-              <li key={project.id} className="group relative rounded-2xl border border-line bg-panel hover:border-accent">
-                <Link href={`/project/${project.id}`} className="block p-4 pr-12">
-                  <div className="truncate font-medium">{project.title}</div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-                    <span>{Number(project.version_count)} 个版本</span>
-                    <time suppressHydrationWarning>{new Date(Number(project.updated_at)).toLocaleString("zh-CN")}</time>
-                    {project.published_slug && <span className="text-good">● 已发布</span>}
-                  </div>
-                </Link>
-                <button
-                  onClick={() => remove(project.id)}
-                  aria-label={`删除 ${project.title}`}
-                  className="absolute right-3 top-3 rounded-md px-2 py-1 text-xs text-muted opacity-0 hover:bg-raised hover:text-bad focus:opacity-100 group-hover:opacity-100"
-                >
-                  删除
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <ProjectList projects={projects} maxProjects={maxProjects} isGuest={isGuest} />
       <IntroVideo />
 
       <footer className="mt-16 text-center text-xs text-muted">

@@ -9,6 +9,7 @@ import { Mascot, type TeamName } from "@/components/Mascot";
 import { extractHtml } from "@/lib/html";
 import type { AgentEvent, AgentName, JobSnapshot, Message, RaceCandidate, VersionMeta } from "@/lib/types";
 
+import { defaultRaceModels, ModelControls, nextRaceModels, RaceLanePicker, savedModel, type ModelChoice } from "@/components/ModelControls";
 const PreviewFrame = dynamic(() => import("@/components/PreviewFrame"), { ssr: false });
 
 const AGENTS: { key: AgentName; name: string; role: string; doing: string }[] = [
@@ -33,6 +34,21 @@ const laneFromCandidate = (c: RaceCandidate): RaceLaneView => ({
   id: c.id,
   failed: !c.html,
 });
+/**
+ * The first request of a project, handed over from the home page through sessionStorage: the
+ * prompt plus the model (or racing models) picked there.
+ */
+function readPending(raw: string | null): { prompt: string; choice?: ModelChoice } | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.prompt === "string") return parsed;
+  } catch {
+    /* not JSON: a bare prompt */
+  }
+  return { prompt: raw };
+}
+
 export type QuotaInfo = { freeLimit: number; freeLeft: number; credits: number };
 
 const PREVIEW_INTERVAL = 150;
@@ -239,7 +255,7 @@ export function Workspace({
   );
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, choice?: ModelChoice) => {
       const prompt = text.trim();
       if (!prompt || attachedRef.current) return;
       setError("");
@@ -248,12 +264,28 @@ export function Workspace({
       const res = await fetch(`/api/projects/${project.id}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(raceOn && raceModels.length >= 2 ? { prompt, models: raceModels } : { prompt, model }),
+        // `choice` carries what was picked on the home page; otherwise use this page's controls.
+        body: JSON.stringify(
+          choice
+            ? { prompt, ...choice }
+            : raceOn && raceModels.length >= 2
+              ? { prompt, models: raceModels }
+              : { prompt, model },
+        ),
       }).catch(() => null);
       if (!res?.ok) {
         const data = await res?.json().catch(() => ({}));
         setError(data?.error || "发送失败，请检查网络后重试。");
         setNeedCredits(res?.status === 402);
+        // A request handed over from the home page never reached the input box here: put it
+        // there, with the same race setup, so it can be adjusted and sent again.
+        if (choice) {
+          setInput(prompt);
+          if (choice.models) {
+            setRaceModels(choice.models);
+            setRaceOn(true);
+          } else if (choice.model) setModel(choice.model);
+        }
         return;
       }
       setViewing(null);
@@ -270,13 +302,12 @@ export function Workspace({
     [project.id, attach, model, raceOn, raceModels],
   );
 
-  const selectable = models.filter((m) => !m.premium || quota.credits > 0);
   function toggleRace() {
-    if (!raceOn && raceModels.length < 2) setRaceModels(selectable.slice(0, 2).map((m) => m.id));
+    if (!raceOn && raceModels.length < 2) setRaceModels(defaultRaceModels(models, quota.credits));
     setRaceOn((on) => !on);
   }
   function toggleRaceModel(id: string) {
-    setRaceModels((list) => (list.includes(id) ? list.filter((m) => m !== id) : list.length < raceMax ? [...list, id] : list));
+    setRaceModels((list) => nextRaceModels(list, id, raceMax));
   }
 
   async function keepCandidate(candidateId: string) {
@@ -301,15 +332,8 @@ export function Workspace({
 
   // Restore the model the user picked last time, if the server still offers it.
   useEffect(() => {
-    let saved: string | null = null;
-    try {
-      saved = localStorage.getItem("atoms:model");
-    } catch {
-      /* preference only */
-    }
-    const match = models.find((m) => m.id === saved);
-    // A premium model is only restored while there are credits to pay for it.
-    if (match && (!match.premium || initialQuota.credits > 0)) setTimeout(() => setModel(match.id), 0);
+    const saved = savedModel(models, initialQuota.credits);
+    if (saved) setTimeout(() => setModel(saved), 0);
   }, [models, initialQuota.credits]);
 
   // On load: re-attach to a job that is still running, or start the one queued from the home page.
@@ -320,10 +344,10 @@ export function Workspace({
       setTimeout(() => void attach(initialJob.startedAt), 0);
       return;
     }
-    const pending = sessionStorage.getItem(PENDING_KEY(project.id));
+    const pending = readPending(sessionStorage.getItem(PENDING_KEY(project.id)));
     if (pending) {
       sessionStorage.removeItem(PENDING_KEY(project.id));
-      setTimeout(() => void send(pending), 0);
+      setTimeout(() => void send(pending.prompt, pending.choice), 0);
     }
   }, [project.id, initialJob, attach, send]);
 
@@ -573,31 +597,14 @@ export function Workspace({
           >
             <div className="rounded-2xl border border-line bg-panel p-2 focus-within:border-accent">
               {raceOn && !busy && (
-                <div className="mb-2 rounded-xl bg-accent-soft p-2">
-                  <div className="mb-1.5 text-xs">
-                    🏁 竞速模式：选 2–{raceMax} 个模型同时构建，完成后挑一版保留。本次消耗 {raceModels.length} 次额度。
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {models.map((m) => {
-                      const on = raceModels.includes(m.id);
-                      const locked = m.premium && quota.credits <= 0;
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          disabled={locked || (!on && raceModels.length >= raceMax)}
-                          onClick={() => toggleRaceModel(m.id)}
-                          title={locked ? "需要积分" : m.premium ? "消耗 1 积分" : "使用免费次数"}
-                          className={`rounded-full border px-2.5 py-1 text-xs disabled:opacity-40 ${
-                            on ? "border-accent bg-accent text-white" : "border-line bg-panel text-ink"
-                          }`}
-                        >
-                          {m.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                <RaceLanePicker
+                  models={models}
+                  credits={quota.credits}
+                  raceMax={raceMax}
+                  raceModels={raceModels}
+                  unitsLeft={quota.freeLeft + quota.credits}
+                  onToggle={toggleRaceModel}
+                />
               )}
               <textarea
                 value={input}
@@ -618,42 +625,15 @@ export function Workspace({
                 {busy ? (
                   <span className="text-xs text-muted">任务在后台运行，离开页面也不会中断</span>
                 ) : models.length > 1 && !mock ? (
-                  <label className="flex items-center gap-1.5 text-xs text-muted">
-                    {raceMax >= 2 && (
-                      <button
-                        type="button"
-                        onClick={toggleRace}
-                        disabled={!raceOn && selectable.length < 2}
-                        title={selectable.length < 2 ? "竞速需要至少两个可用的模型" : "让多个模型同时构建，挑最好的一版"}
-                        className={`rounded-full border px-2.5 py-0.5 disabled:opacity-40 ${
-                          raceOn ? "border-accent bg-accent text-white" : "border-line text-ink hover:bg-raised"
-                        }`}
-                      >
-                        🏁 竞速
-                      </button>
-                    )}
-                    {!raceOn && "模型"}
-                    <select
-                      hidden={raceOn}
-                      value={model}
-                      onChange={(e) => {
-                        setModel(e.target.value);
-                        try {
-                          localStorage.setItem("atoms:model", e.target.value);
-                        } catch {
-                          /* preference only */
-                        }
-                      }}
-                      className="max-w-44 rounded-md border border-line bg-bg px-1.5 py-0.5 text-ink outline-none"
-                    >
-                      {models.map((m) => (
-                        <option key={m.id} value={m.id} disabled={m.premium && quota.credits <= 0}>
-                          {m.label}
-                          {m.premium ? " · 1 积分" : models.some((x) => x.premium) ? " · 免费" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <ModelControls
+                    models={models}
+                    credits={quota.credits}
+                    raceMax={raceMax}
+                    raceOn={raceOn}
+                    onToggleRace={toggleRace}
+                    model={model}
+                    onModel={setModel}
+                  />
                 ) : (
                   <span className="text-xs text-muted">Enter 发送 · Shift+Enter 换行</span>
                 )}
@@ -664,7 +644,7 @@ export function Workspace({
                 ) : (
                   <button
                     type="submit"
-                    disabled={!input.trim() || (raceOn && raceModels.length < 2)}
+                    disabled={!input.trim() || (raceOn && (raceModels.length < 2 || raceModels.length > quota.freeLeft + quota.credits))}
                     className="rounded-full bg-accent px-4 py-1 text-xs font-medium text-white disabled:opacity-40"
                   >
                     {raceOn ? "开始竞速" : "发送"}

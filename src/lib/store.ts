@@ -3,11 +3,20 @@ import { config } from "./config";
 import { query, queryOne, run, transaction } from "./db";
 import type { Message, Project, RaceCandidate, User, VersionMeta } from "./types";
 
-export type ProjectSummary = Project & { version_count: number };
+export type ProjectSummary = Project & {
+  version_count: number;
+  /** The request behind the newest version: what the app currently is, in the user's words. */
+  last_prompt: string | null;
+  /** Race entries still waiting for the user to keep one. */
+  candidate_count: number;
+};
 
 export function listProjects(userId: string) {
   return query<ProjectSummary>(
-    `SELECT p.*, (SELECT COUNT(*) FROM versions v WHERE v.project_id = p.id) AS version_count
+    `SELECT p.*,
+       (SELECT COUNT(*) FROM versions v WHERE v.project_id = p.id) AS version_count,
+       (SELECT v.prompt FROM versions v WHERE v.project_id = p.id ORDER BY v.number DESC LIMIT 1) AS last_prompt,
+       (SELECT COUNT(*) FROM race_candidates c WHERE c.project_id = p.id AND c.html != '') AS candidate_count
      FROM projects p WHERE p.user_id = ? ORDER BY p.updated_at DESC`,
     [userId],
   );
