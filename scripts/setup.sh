@@ -65,7 +65,8 @@ USER_NAME="$(id -un)"
 command -v systemctl >/dev/null || die "systemd is required"
 command -v apt-get >/dev/null || die "this script supports Ubuntu and Debian (apt). On other systems follow the manual steps in docs/部署.md"
 [ "$USER_NAME" != "root" ] || die "log in as a normal user with sudo, not as root: the app should not run as root"
-sudo -v || die "this user needs sudo"
+# `sudo -v` asks for a password even where every command is allowed without one, so try that first.
+sudo -n true 2>/dev/null || sudo -v || die "this user needs sudo"
 
 case "$(uname -m)" in
   x86_64) arch=x64 ;;
