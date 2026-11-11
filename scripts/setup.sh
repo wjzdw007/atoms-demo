@@ -48,8 +48,8 @@ if [ "${1:-}" != "--on-server" ]; then
     say "Server is ready. Deploy with: DEPLOY_HOST=$HOST ./scripts/deploy.sh"
   else
     DEPLOY_HOST="$HOST" ./scripts/deploy.sh
-    say "Done. Next: put your model key in ~/atoms-demo/shared/.env.local on the server (see .env.example),"
-    say "then: ssh $HOST sudo systemctl restart atoms-demo. Until then the app runs in demo mode."
+    say "Done. Settings live in ~/atoms-demo/shared/.env.local on the server (see .env.example)."
+    say "Without LLM_API_KEY there the app runs in demo mode; after editing: ssh $HOST sudo systemctl restart atoms-demo"
   fi
   exit 0
 fi
