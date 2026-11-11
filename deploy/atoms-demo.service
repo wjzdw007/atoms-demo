@@ -25,6 +25,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
+# ProtectSystem alone leaves /home writable; this is what makes the app's own code read-only.
+ProtectHome=read-only
 ReadWritePaths=/home/ubuntu/atoms-demo/shared/data /home/ubuntu/atoms-demo/current/.next
 InaccessiblePaths=-/home/ubuntu/.ssh -/home/ubuntu/atoms-demo/relay -/home/ubuntu/atoms-demo/backups
 ProtectKernelTunables=yes
