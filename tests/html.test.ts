@@ -1,6 +1,7 @@
+import { Script } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { parseReview, plannerRequest } from "@/lib/agents";
-import { checkHtml, extractHtml } from "@/lib/html";
+import { buildSrcdoc, checkHtml, extractHtml, guardLoops, scanScripts, streamablePart } from "@/lib/html";
 import { checkScripts } from "@/lib/syntax";
 
 const page = (body: string) => `<!doctype html><html><head></head><body>${body}</body></html>`;
@@ -90,5 +91,93 @@ describe("plannerRequest", () => {
     const request = plannerRequest("加一个深色模式", ["做一个番茄钟"], true);
     expect(request).toContain("- 做一个番茄钟");
     expect(request).toContain("这是对已有应用的修改请求：\n加一个深色模式");
+  });
+});
+
+describe("guardLoops", () => {
+  /** Runs a guarded script the way the preview would, with a guard that gives up after `limit` turns. */
+  function run(code: string, limit = 10_000) {
+    const html = guardLoops(page(`<script>${code}</script>`));
+    const script = scanScripts(html).scripts[0].code;
+    let turns = 0;
+    const sandbox = {
+      window: {} as Record<string, unknown>,
+      __atomsLoop: () => {
+        if (++turns > limit) throw new Error("stopped");
+      },
+      out: [] as unknown[],
+    };
+    sandbox.window.__atomsLoop = sandbox.__atomsLoop;
+    new Script(script).runInNewContext(sandbox, { timeout: 2000 });
+    return { out: sandbox.out, turns, script };
+  }
+
+  it("leaves what loops compute unchanged, in every form a loop can take", () => {
+    const { out, turns } = run(`
+      let n = 0;
+      for (let i = 0; i < 3; i++) n += i;
+      for (const k in { a: 1, b: 2 }) n += k.length;
+      for (const v of [10, 20]) n += v;
+      while (n < 40) n++;
+      do n += 5; while (n < 50);
+      for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) n++;
+      let i = 0; while (i < 3) i++
+      outer: for (;;) { for (;;) { break outer; } }
+      const text = "while (true) {}"; const re = /for \\(;;\\)/;
+      out.push(n, i, text.length, re.source.length > 0);
+    `);
+    expect(out).toEqual([54, 3, 15, true]);
+    expect(turns).toBeGreaterThan(15);
+  });
+  it("stops a loop that never ends, like the one that froze a generated chess game", () => {
+    // The step that moves along the line is outside the loop it belongs to.
+    const stuck = `
+      let r = 0;
+      while (r < 8) { out.push(r); }
+      r += 1;`;
+    expect(() => run(stuck)).toThrow("stopped");
+    expect(() => run("for (;;);")).toThrow("stopped");
+    expect(() => run("do ; while (true)")).toThrow("stopped");
+  });
+  it("keeps every line where it was, so error line numbers still match the code", () => {
+    const code = "let a = 0;\nwhile (a < 2)\n  a++;\nfor (;;) {\n  break;\n}\n";
+    expect(run(code).script.split("\n")).toHaveLength(code.split("\n").length);
+  });
+  it("leaves alone what it cannot or should not touch", () => {
+    const untouched = page(
+      "<script>while (</script>" +
+        '<script type="application/json">{"while": "(true) {}"}</script>' +
+        '<script src="x.js"></script>' +
+        "<p>while (true) {}</p>",
+    );
+    expect(guardLoops(untouched)).toBe(untouched);
+    expect(guardLoops(page('<script type="module">for (const x of [1]) { await x; }</script>'))).toContain("__atomsLoop");
+  });
+  it("is what the preview document is built from, next to the guard itself", () => {
+    const doc = buildSrcdoc(page("<script>while (go()) step();</script>"));
+    expect(doc).toContain("window.__atomsLoop=function");
+    expect(doc).toContain("while (go()) {window.__atomsLoop&&__atomsLoop();step();}");
+  });
+});
+
+describe("streamablePart", () => {
+  it("holds a script back until it is complete, and only ever appends", () => {
+    const full = page("<h1>hi</h1><script>while (a) b();</script><p>tail</p><script>for (;;) {}");
+    let previous = "";
+    for (let end = 0; end <= full.length; end++) {
+      const part = streamablePart(full.slice(0, end), false);
+      expect(part.startsWith(previous)).toBe(true);
+      // Nothing of a script is passed on before all of it is there.
+      const opens = (part.match(/<script/g) ?? []).length;
+      const closes = (part.match(/<\/script>/g) ?? []).length;
+      expect(opens).toBe(closes);
+      previous = part;
+    }
+    expect(previous).toContain("while (a) {window.__atomsLoop&&__atomsLoop();b();}");
+    expect(previous).not.toContain("for (;;)");
+    // When nothing more is coming, the unfinished rest goes out as it is.
+    const last = streamablePart(full, true);
+    expect(last.startsWith(previous)).toBe(true);
+    expect(last).toContain("<script>for (;;) {}</body>");
   });
 });

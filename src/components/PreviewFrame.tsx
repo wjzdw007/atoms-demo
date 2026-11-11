@@ -2,10 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ANONYMOUS, lastViewer, localKey, readLocal, rememberViewer, type Store } from "@/lib/app-cache";
-import { buildSrcdoc, buildStreamDoc } from "@/lib/html";
+import { buildSrcdoc, buildStreamDoc, streamablePart } from "@/lib/html";
 
 const MAX_STORE_BYTES = 500_000;
 const SAVE_DELAY = 600;
+/** How often the app is asked whether it is still there, and how long it may stay silent. */
+const PING_MS = 2000;
+const HANG_MS = 8000;
+const HANG_MESSAGE = "应用没有响应，已停止运行（很可能有死循环，或一次运算量过大）";
 
 /** Resolves to whether the server accepted the save. */
 function saveRemote(appId: string, data: Store) {
@@ -63,18 +67,28 @@ type FrameState = {
   mode: "none" | "static" | "stream" | "final";
   /** The HTML this frame is showing (or should show once queued chunks are delivered). */
   target: string;
+  /** How much of the streamable form of `target` (see streamablePart) the frame has been given. */
   sent: number;
   ready: boolean;
   ending: boolean;
   reloadKey: number;
+  restart: number;
+  /** When the frame was last heard from (or created). */
+  alive: number;
+  /** The app has a dialog open, which blocks it without it being stuck. */
+  modal: boolean;
+  /** The frame was removed because the app stopped responding. */
+  hung: boolean;
 };
 
 function flush(s: FrameState) {
   const win = s.frame?.contentWindow;
   if (!s.ready || !win) return;
-  if (s.sent < s.target.length) {
-    win.postMessage({ source: "atoms-host", type: "chunk", text: s.target.slice(s.sent) }, "*");
-    s.sent = s.target.length;
+  // Scripts are passed on whole and with their loops guarded, never as they trickle in.
+  const text = streamablePart(s.target, s.ending);
+  if (s.sent < text.length) {
+    win.postMessage({ source: "atoms-host", type: "chunk", text: text.slice(s.sent) }, "*");
+    s.sent = text.length;
   }
   if (s.ending) {
     win.postMessage({ source: "atoms-host", type: "end" }, "*");
@@ -90,6 +104,12 @@ function flush(s: FrameState) {
  * While `streaming` is true and `html` only grows, new text is appended to the live document
  * instead of reloading the frame, so the preview builds up without flashing. When streaming ends
  * on the same text, the document is simply closed and kept.
+ *
+ * A generated app must never take the site down with it. Its loops are guarded (see guardLoops),
+ * so one that never ends becomes an ordinary error. As a second line, the frame is pinged: an app
+ * that stops answering for any other reason is removed and replaced by a notice. That second line
+ * needs the browser to run the sandboxed frame in its own process (Chromium does); where the
+ * frame shares the page's process, the guard is what keeps the page alive.
  *
  * The iframe is managed imperatively: every full load gets a brand-new element.
  */
@@ -119,7 +139,12 @@ export default function PreviewFrame({
     ready: false,
     ending: false,
     reloadKey,
+    restart: 0,
+    alive: 0,
+    modal: false,
+    hung: false,
   });
+  const [restart, setRestart] = useState(0);
   // null until the stored data has been fetched; the frame is not created before that, so the
   // app never boots with empty storage and then overwrites the real data.
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
@@ -154,8 +179,9 @@ export default function PreviewFrame({
     const host = hostRef.current;
     if (!host || loadedFor !== appId) return;
 
-    const forced = s.reloadKey !== reloadKey;
+    const forced = s.reloadKey !== reloadKey || s.restart !== restart;
     s.reloadKey = reloadKey;
+    s.restart = restart;
 
     if (!forced) {
       if (s.mode === "stream" && html.startsWith(s.target)) {
@@ -181,8 +207,53 @@ export default function PreviewFrame({
     const store = storeRef.current.data;
     frame.srcdoc = streaming ? buildStreamDoc(store) : buildSrcdoc(html, store);
     host.replaceChildren(frame);
-    Object.assign(s, { frame, mode: streaming ? "stream" : "static", target: html, sent: 0, ready: false, ending: false });
-  }, [html, streaming, reloadKey, appId, loadedFor]);
+    Object.assign(s, {
+      frame,
+      mode: streaming ? "stream" : "static",
+      target: html,
+      sent: 0,
+      ready: false,
+      ending: false,
+      alive: Date.now(),
+      modal: false,
+      hung: false,
+    });
+  }, [html, streaming, reloadKey, restart, appId, loadedFor]);
+
+  useEffect(() => {
+    let lastTick = Date.now();
+    const timer = setInterval(() => {
+      const s = stateRef.current;
+      const now = Date.now();
+      // This page itself was held up (a background tab, a dialog, a busy moment): the silence
+      // says nothing about the app, so start counting again.
+      const delayed = now - lastTick > PING_MS * 2;
+      lastTick = now;
+      const win = s.frame?.contentWindow;
+      const host = hostRef.current;
+      if (!win || !host || s.hung) return;
+      if (delayed || document.hidden || s.modal) s.alive = now;
+      if (now - s.alive > HANG_MS) {
+        // Removing the frame is what actually stops the runaway code.
+        Object.assign(s, { frame: null, mode: "none", hung: true });
+        const notice = document.createElement("div");
+        notice.className = "flex h-full w-full flex-col items-center justify-center gap-3 bg-white p-6 text-center text-sm text-muted";
+        const text = document.createElement("p");
+        text.textContent = HANG_MESSAGE;
+        const again = document.createElement("button");
+        again.type = "button";
+        again.textContent = "重新运行";
+        again.className = "rounded-full border border-line px-4 py-1.5 text-xs font-medium text-ink hover:bg-raised";
+        again.onclick = () => setRestart((n) => n + 1);
+        notice.append(text, again);
+        host.replaceChildren(notice);
+        onErrorRef.current?.(HANG_MESSAGE);
+        return;
+      }
+      win.postMessage({ source: "atoms-host", type: "ping" }, "*");
+    }, PING_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -190,6 +261,8 @@ export default function PreviewFrame({
       if (event.source !== s.frame?.contentWindow) return;
       const data = event.data;
       if (!data || data.source !== "atoms-preview") return;
+      s.alive = Date.now();
+      if (data.type === "modal") s.modal = data.open === true;
       if (data.type === "ready") {
         s.ready = true;
         flush(s);
