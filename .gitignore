@@ -45,3 +45,6 @@ next-env.d.ts
 
 # keep the env template
 !.env.example
+
+# full submission notes for the Feishu doc (contains billing details)
+/笔试说明-飞书版.md
