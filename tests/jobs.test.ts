@@ -59,6 +59,48 @@ describe("a generation job", () => {
   }, 30_000);
 });
 
+describe("streamJob", () => {
+  it("replays the whole job to a reader and limits how many can follow one job", async () => {
+    const project = { id: await store.createProject(user.id, "进度流"), title: "进度流" };
+    const charge = await store.chargeGeneration(user);
+    if (!charge.ok) throw new Error("charge failed");
+    expect(
+      await jobs.startJob({ projectId: project.id, userId: user.id, projectTitle: project.title, prompt: "做一个计数器", charge: charge.source }),
+    ).toBe("started");
+    const job = jobs.getJob(project.id, user.id)!;
+
+    const aborts = Array.from({ length: 6 }, () => new AbortController());
+    const streams = aborts.map((a) => jobs.streamJob(job, 0, a.signal));
+    expect(streams.every(Boolean)).toBe(true);
+    // The cap: one more connection is refused instead of holding another copy of the log.
+    expect(jobs.streamJob(job, 0, new AbortController().signal)).toBeNull();
+    // A connection that goes away frees its place.
+    aborts[5].abort();
+    const again = jobs.streamJob(job, 0, new AbortController().signal);
+    expect(again).not.toBeNull();
+
+    // A stream nobody reads holds no events: they are produced only when the reader asks.
+    const reader = streams[0]!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    const events = text.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line));
+    expect(events[0]).toMatchObject({ type: "stage", agent: "planner", status: "start" });
+    expect(events.at(-1)).toMatchObject({ type: "done" });
+    expect(events).toHaveLength(job.events.length);
+
+    await waitUntilIdle();
+    // Late subscriber after the end: gets the log and the stream closes.
+    const late = await new Response(jobs.streamJob(job, job.events.length - 1, new AbortController().signal)).text();
+    expect(JSON.parse(late.trim())).toMatchObject({ type: "done" });
+    aborts.forEach((a) => a.abort());
+  }, 30_000);
+});
+
 describe("recoverInterruptedJobs", () => {
   it("refunds a job left running by a previous process, once", async () => {
     const project = { id: await store.createProject(user.id, "被中断的项目") };

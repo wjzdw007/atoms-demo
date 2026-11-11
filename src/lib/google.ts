@@ -14,7 +14,8 @@ export function googleConfig(request?: Request) {
   };
 }
 
-export const OAUTH_STATE_COOKIE = "atoms_oauth_state";
+/** `__Host-` (HTTPS only): the cookie cannot be set or overwritten by a sibling subdomain. */
+export const oauthStateCookie = (secure: boolean) => (secure ? "__Host-atoms_oauth_state" : "atoms_oauth_state");
 
 /**
  * Server-to-Google calls. From mainland China these hosts are unreachable, so each one can be
@@ -98,7 +99,9 @@ export async function fetchGoogleProfile(code: string, config: ReturnType<typeof
     // Google rotates its keys; retry once with a fresh set before giving up.
     ({ payload } = await jwtVerify(idToken, createLocalJWKSet(await googleKeys(true)), options));
   }
+  if (!payload.sub) throw new Error("Google ID token has no subject");
   if (!payload.email || payload.email_verified !== true) throw new Error("Google email is not verified");
   const email = String(payload.email).toLowerCase();
-  return { email, name: String(payload.name || email.split("@")[0]) };
+  // `sub` never changes and is never reassigned; the address can be renamed or recycled.
+  return { sub: String(payload.sub), email, name: String(payload.name || email.split("@")[0]) };
 }

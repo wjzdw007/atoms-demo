@@ -1,7 +1,9 @@
 import { getOrCreateUser, GuestLimitError, jsonError } from "@/lib/auth";
+import { readJson } from "@/lib/body";
 import { config } from "@/lib/config";
 import { run } from "@/lib/db";
 import { getJob } from "@/lib/jobs";
+import { rateLimit } from "@/lib/rate-limit";
 import { countProjects, createProject, findBlankProject } from "@/lib/store";
 
 /**
@@ -12,7 +14,7 @@ import { countProjects, createProject, findBlankProject } from "@/lib/store";
  * unused blank project is handed out again instead of piling up empty ones.
  */
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
+  const body = await readJson(request);
   const blank = body?.blank === true;
   const prompt = String(body?.prompt ?? "").trim();
   if (!blank && !prompt) return jsonError("请先描述你想做的应用");
@@ -31,6 +33,9 @@ export async function POST(request: Request) {
       await run("UPDATE projects SET title = '新项目', updated_at = ? WHERE id = ?", [Date.now(), unused]);
       return Response.json({ id: unused });
     }
+  }
+  if (!rateLimit(`project:${user.id}`, config().rateLimit.projectsPerHour, 60 * 60_000)) {
+    return jsonError("新建项目太频繁了，请稍后再试。", 429);
   }
   const limit = config().storage.maxProjectsPerUser;
   if ((await countProjects(user.id)) >= limit) return jsonError(`每个账号最多保留 ${limit} 个项目，请先删除一些。`, 403);

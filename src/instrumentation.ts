@@ -15,4 +15,17 @@ export async function register() {
     // Never block startup on this; the rows stay marked running and are retried on the next start.
     console.error("Could not recover interrupted jobs:", error instanceof Error ? error.message : error);
   }
+  // Guest accounts whose cookie has expired can never be reached again; clear them out now and
+  // once a day, so abandoned (or mass-created) guests do not pile up on the disk.
+  const purge = async () => {
+    try {
+      const { purgeStaleGuests } = await import("./lib/store");
+      const removed = await purgeStaleGuests();
+      if (removed) console.log(`Removed ${removed} expired guest account(s).`);
+    } catch (error) {
+      console.error("Could not remove expired guests:", error instanceof Error ? error.message : error);
+    }
+  };
+  void purge();
+  setInterval(purge, 24 * 3600 * 1000).unref();
 }

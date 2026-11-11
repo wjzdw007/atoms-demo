@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { readJson } from "@/lib/body";
 import { getUser, jsonError } from "@/lib/auth";
 import { run } from "@/lib/db";
 import { getLatestVersion, getOwnedProject } from "@/lib/store";
@@ -11,7 +12,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const project = await getOwnedProject(id, user.id);
   if (!project) return jsonError("项目不存在", 404);
 
-  const body = await request.json().catch(() => null);
+  const body = await readJson(request);
   if (body?.unpublish) {
     await run("UPDATE projects SET published_slug = NULL, published_version_id = NULL WHERE id = ?", [id]);
     return Response.json({ slug: null, versionId: null });

@@ -1,5 +1,6 @@
 import { engineerStage, planStage, ProviderError, runAgents } from "./agents";
 import { checkHtml } from "./html";
+import { checkScripts } from "./syntax";
 import { config } from "./config";
 import { nanoid } from "nanoid";
 import { query, run, withTransaction } from "./db";
@@ -324,47 +325,68 @@ async function execute(job: Job, opts: { projectTitle: string; charge: ChargeSou
 /**
  * Streams a job's events as NDJSON starting at `from`, then keeps the response open until the job
  * ends. Disconnecting only detaches this listener.
+ *
+ * Events are handed over only as fast as the client reads them (`pull`), a bounded batch at a
+ * time, so a connection that stops reading holds one batch and not a second copy of the whole
+ * log. The number of connections per job is capped for the same reason; null means the cap is
+ * reached.
  */
+const STREAM_BATCH_CHARS = 64_000;
+
 export function streamJob(job: Job, from: number, signal: AbortSignal) {
+  if (job.listeners.size >= config().generation.maxStreamsPerJob) return null;
   const encoder = new TextEncoder();
   let cursor = Math.max(0, Math.min(from, job.events.length));
+  let closed = false;
+  let beat = false;
+  let wake: (() => void) | null = null;
+  const notify = () => {
+    const resume = wake;
+    wake = null;
+    resume?.();
+  };
+  // Blank lines keep proxies from timing out an idle connection (e.g. while the model thinks).
+  const heartbeat = setInterval(() => {
+    beat = true;
+    notify();
+  }, 15_000);
+  const detach = () => {
+    closed = true;
+    job.listeners.delete(notify);
+    clearInterval(heartbeat);
+    signal.removeEventListener("abort", detach);
+    notify();
+  };
+  signal.addEventListener("abort", detach);
+  job.listeners.add(notify);
   return new ReadableStream<Uint8Array>({
-    start(controller) {
-      let closed = false;
-      const close = () => {
-        if (closed) return;
-        closed = true;
-        job.listeners.delete(pump);
-        clearInterval(heartbeat);
-        try {
-          controller.close();
-        } catch {
-          /* already closed */
-        }
-      };
-      const pump = () => {
-        if (closed) return;
-        try {
-          while (cursor < job.events.length) {
-            controller.enqueue(encoder.encode(JSON.stringify(job.events[cursor++]) + "\n"));
+    async pull(controller) {
+      for (;;) {
+        if (closed) break;
+        if (cursor < job.events.length) {
+          let batch = "";
+          while (cursor < job.events.length && batch.length < STREAM_BATCH_CHARS) {
+            batch += JSON.stringify(job.events[cursor++]) + "\n";
           }
-        } catch {
-          return close();
+          controller.enqueue(encoder.encode(batch));
+          return;
         }
-        if (!job.running) close();
-      };
-      // Blank lines keep proxies from timing out an idle connection (e.g. while the model thinks).
-      const heartbeat = setInterval(() => {
-        try {
+        if (!job.running) break;
+        if (beat) {
+          beat = false;
           controller.enqueue(encoder.encode("\n"));
-        } catch {
-          close();
+          return;
         }
-      }, 15_000);
-      signal.addEventListener("abort", close);
-      job.listeners.add(pump);
-      pump();
+        await new Promise<void>((resolve) => (wake = resolve));
+      }
+      detach();
+      try {
+        controller.close();
+      } catch {
+        /* already closed */
+      }
     },
+    cancel: detach,
   });
 }
 
@@ -434,7 +456,8 @@ async function executeRace(job: Job, lanes: RaceLane[]) {
           // An aborted model stream can end quietly instead of throwing; what it left is not a result.
           if (signal.aborted) throw new Error("aborted");
           html = step.value;
-          const problems = checkHtml(html);
+          // The same checks a normal run ends with: a script that does not parse is a dead app.
+          const problems = [...checkHtml(html), ...checkScripts(html)];
           if (problems.length) {
             error = problems.join("；");
             html = "";

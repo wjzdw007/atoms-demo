@@ -1,5 +1,6 @@
 import { getUser, jsonError } from "@/lib/auth";
-import { run } from "@/lib/db";
+import { readJson } from "@/lib/body";
+import { run, transaction } from "@/lib/db";
 import { cancelJob } from "@/lib/jobs";
 import { getOwnedProject } from "@/lib/store";
 
@@ -18,7 +19,7 @@ async function authorize({ params }: Params) {
 export async function PATCH(request: Request, ctx: Params) {
   const auth = await authorize(ctx);
   if (auth.error) return auth.error;
-  const body = await request.json().catch(() => null);
+  const body = await readJson(request);
   const title = String(body?.title ?? "").trim().slice(0, 40);
   if (!title) return jsonError("名称不能为空");
   await run("UPDATE projects SET title = ? WHERE id = ? AND user_id = ?", [title, auth.project.id, auth.user.id]);
@@ -30,10 +31,13 @@ export async function DELETE(_request: Request, ctx: Params) {
   if (auth.error) return auth.error;
   const { id } = auth.project;
   cancelJob(id, auth.user.id);
-  await run("DELETE FROM race_candidates WHERE project_id = ?", [id]);
-  await run("DELETE FROM app_storage WHERE project_id = ?", [id]);
-  await run("DELETE FROM messages WHERE project_id = ?", [id]);
-  await run("DELETE FROM versions WHERE project_id = ?", [id]);
-  await run("DELETE FROM projects WHERE id = ? AND user_id = ?", [id, auth.user.id]);
+  // All or nothing: a failure halfway must not leave a project without its versions.
+  await transaction([
+    { sql: "DELETE FROM race_candidates WHERE project_id = ?", args: [id] },
+    { sql: "DELETE FROM app_storage WHERE project_id = ?", args: [id] },
+    { sql: "DELETE FROM messages WHERE project_id = ?", args: [id] },
+    { sql: "DELETE FROM versions WHERE project_id = ?", args: [id] },
+    { sql: "DELETE FROM projects WHERE id = ? AND user_id = ?", args: [id, auth.user.id] },
+  ]);
   return Response.json({ ok: true });
 }

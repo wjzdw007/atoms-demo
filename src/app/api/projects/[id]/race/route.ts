@@ -1,4 +1,5 @@
 import { getUser, jsonError } from "@/lib/auth";
+import { readJson } from "@/lib/body";
 import { run } from "@/lib/db";
 import { addMessage, addVersion, clearCandidates, getCandidate, getLatestVersion, getOwnedProject, hasStorageRoom } from "@/lib/store";
 
@@ -18,7 +19,7 @@ export async function POST(request: Request, ctx: Params) {
   const auth = await authorize(ctx);
   if (auth.error) return auth.error;
   const { user, project } = auth;
-  const body = await request.json().catch(() => null);
+  const body = await readJson(request);
   const candidate = await getCandidate(project.id, String(body?.candidateId ?? ""));
   if (!candidate?.html) return jsonError("这个候选版本不存在或没有生成成功", 404);
   if (!(await hasStorageRoom(user.id, Buffer.byteLength(candidate.html)))) {

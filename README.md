@@ -128,6 +128,8 @@ Billing ─ POST /api/billing/orders（下单）→ 管理员 POST /api/admin/or
 | `RACE_MODE` / `RACE_MAX_LANES` | 开 / 3 | 竞速模式开关，以及最多几个模型同时竞速 |
 | `DAILY_FREE_GUEST` / `DAILY_FREE_USER` | 3 / 10 | 每天免费生成次数（访客 / 登录用户） |
 | `DAILY_FREE_PER_IP` | 15 | 同一个 IP 下所有访客每天共用的免费次数 |
+| `QUOTA_TIMEZONE` | `UTC` | 每日额度在哪个时区的零点重置（如 `Asia/Shanghai`） |
+| `MAX_STORAGE_BYTES_PER_USER` / `MAX_STORAGE_BYTES_PER_GUEST` | 50MB / 10MB | 每个账号的存储上限（版本加应用数据；登录用户 / 访客） |
 | `SITE_DAILY_GENERATION_LIMIT` | 500 | 全站每日生成上限，兜住模型账单 |
 | `BILLING_MODE` | `off` | `off` 关闭购买；`manual` 下单后由管理员确认到账；`mock` 自助到账，仅限本地演示 |
 | `ADMIN_TOKEN` | 无 | 管理接口的令牌；不设则管理接口不存在 |

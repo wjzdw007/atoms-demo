@@ -377,31 +377,46 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
 
     // 3. Reviewer: read the code against the request; blocking findings get one fix pass.
     // Scripts that do not even parse are added to the findings as fact, whatever the reviewer says.
+    //
+    // The app is complete at this point. Review is an extra: if the model service fails during it
+    // (rate limit, an error, a stall), the draft is kept and saved unreviewed instead of throwing
+    // away finished work the user was charged for.
     let review: Review | null = null;
+    let reviewFailed = false;
+    let rawReview = "";
     const broken = checkScripts(html);
     if (reviewMode !== "off") {
       yield { type: "stage", agent: "reviewer", status: "start" };
-      let rawReview = "";
-      const reviewStream = client
-        ? streamChat(
-            client,
-            config.reviewerModel || engineerModel,
-            [
-              { role: "system", content: REVIEWER_SYSTEM },
-              { role: "user", content: `用户需求：\n${prompt}\n\n产品计划：\n${plan}\n\n代码：\n${html}` },
-            ],
-            signal,
-          )
-        : chunked("结论：通过", 4, 40, signal);
-      for await (const delta of reviewStream) {
-        if (isThought(delta)) {
-          yield { type: "thinking", agent: "reviewer", delta: delta.thinking };
-          continue;
+      try {
+        const reviewStream = client
+          ? streamChat(
+              client,
+              config.reviewerModel || engineerModel,
+              [
+                { role: "system", content: REVIEWER_SYSTEM },
+                { role: "user", content: `用户需求：\n${prompt}\n\n产品计划：\n${plan}\n\n代码：\n${html}` },
+              ],
+              signal,
+            )
+          : chunked("结论：通过", 4, 40, signal);
+        for await (const delta of reviewStream) {
+          if (isThought(delta)) {
+            yield { type: "thinking", agent: "reviewer", delta: delta.thinking };
+            continue;
+          }
+          if (rawReview.length > MAX_NOTE_CHARS) break;
+          rawReview += delta;
+          yield { type: "review", delta };
         }
-        if (rawReview.length > MAX_NOTE_CHARS) break;
-        rawReview += delta;
-        yield { type: "review", delta };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        reviewFailed = true;
+        console.error("Review failed, keeping the unreviewed draft:", describeError(error));
       }
+    }
+    if (reviewFailed) {
+      yield { type: "stage", agent: "reviewer", status: "done", note: "评审没有完成，保留未评审的版本", failed: true };
+    } else if (reviewMode !== "off") {
       const read = parseReview(rawReview);
       const parsed = { passed: read.passed && broken.length === 0, findings: [...broken, ...read.findings] };
       review = { ...parsed, fixed: false };
@@ -417,28 +432,35 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
         yield { type: "code_reset" };
         let fixedRaw = "";
         let fixedBytes = 0;
-        const fixStream = streamChat(
-          client,
-          engineerModel,
-          [
-            ...messages,
-            { role: "assistant", content: html },
-            {
-              role: "user",
-              content: `代码评审发现了以下问题，请逐条修复，并输出修复后的完整 HTML 文件（不要解释）：\n${parsed.findings.map((f) => `- ${f}`).join("\n")}`,
-            },
-          ],
-          signal,
-        );
-        for await (const delta of fixStream) {
-          if (isThought(delta)) {
-            yield { type: "thinking", agent: "engineer", delta: delta.thinking };
-            continue;
+        try {
+          const fixStream = streamChat(
+            client,
+            engineerModel,
+            [
+              ...messages,
+              { role: "assistant", content: html },
+              {
+                role: "user",
+                content: `代码评审发现了以下问题，请逐条修复，并输出修复后的完整 HTML 文件（不要解释）：\n${parsed.findings.map((f) => `- ${f}`).join("\n")}`,
+              },
+            ],
+            signal,
+          );
+          for await (const delta of fixStream) {
+            if (isThought(delta)) {
+              yield { type: "thinking", agent: "engineer", delta: delta.thinking };
+              continue;
+            }
+            fixedRaw += delta;
+            fixedBytes += Buffer.byteLength(delta);
+            if (fixedBytes > maxCodeBytes) break;
+            yield { type: "code", delta };
           }
-          fixedRaw += delta;
-          fixedBytes += Buffer.byteLength(delta);
-          if (fixedBytes > maxCodeBytes) break;
-          yield { type: "code", delta };
+        } catch (error) {
+          if (signal.aborted) throw error;
+          // Same rule: a failed rewrite leaves the reviewed draft in place.
+          console.error("Fix pass failed, keeping the draft:", describeError(error));
+          fixedRaw = "";
         }
         const fixedHtml = extractHtml(fixedRaw);
         // Only accept the rewrite if it is a complete document that parses no worse than the
@@ -462,6 +484,7 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
     // 4. QA: structure and script syntax of what will be saved.
     yield { type: "stage", agent: "qa", status: "start" };
     const issues = [...checkHtml(html), ...checkScripts(html)];
+    if (reviewFailed) issues.push("代码评审没有完成（模型服务出错），这一版未经评审");
     yield {
       type: "stage",
       agent: "qa",

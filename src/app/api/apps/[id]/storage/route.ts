@@ -1,6 +1,9 @@
 import { getOrCreateUser, getUser, GuestLimitError, jsonError } from "@/lib/auth";
+import { readJson } from "@/lib/body";
 import { config } from "@/lib/config";
 import { queryOne, run } from "@/lib/db";
+import { rateLimit } from "@/lib/rate-limit";
+import { storageLimit, storageUsed } from "@/lib/store";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -54,20 +57,34 @@ export async function GET(_request: Request, ctx: Params) {
 export async function PUT(request: Request, ctx: Params) {
   const auth = await authorize(ctx, true);
   if (auth.error) return auth.error;
-  const body = await request.json().catch(() => null);
+  // The page batches saves, so this only stops a client that writes in a loop.
+  if (!rateLimit(`appdata:${auth.userId}`, config().rateLimit.appDataPerMinute, 60_000)) {
+    return jsonError("保存太频繁了，请稍后再试。", 429);
+  }
+  const { storage } = config();
+  // Twice the stored size leaves room for JSON escaping in transit.
+  const body = await readJson(request, storage.maxAppDataBytes * 2 + 1024);
   const input = body?.data;
   if (!input || typeof input !== "object" || Array.isArray(input)) return jsonError("数据格式不正确");
   const data: Record<string, string> = {};
   for (const [key, value] of Object.entries(input)) data[key] = String(value);
   const json = JSON.stringify(data);
-  if (Buffer.byteLength(json) > config().storage.maxAppDataBytes) return jsonError("应用数据超过大小上限", 413);
-  const existing = await queryOne("SELECT 1 AS x FROM app_storage WHERE project_id = ? AND user_id = ?", [
-    auth.projectId,
-    auth.userId,
-  ]);
+  const bytes = Buffer.byteLength(json);
+  if (bytes > storage.maxAppDataBytes) return jsonError("应用数据超过大小上限", 413);
+  const existing = await queryOne<{ bytes: number }>(
+    "SELECT LENGTH(CAST(data AS BLOB)) AS bytes FROM app_storage WHERE project_id = ? AND user_id = ?",
+    [auth.projectId, auth.userId],
+  );
   if (!existing) {
     const rows = await queryOne<{ n: number }>("SELECT COUNT(*) AS n FROM app_storage WHERE user_id = ?", [auth.userId]);
-    if (Number(rows?.n ?? 0) >= config().storage.maxAppDataRowsPerUser) return jsonError("保存数据的应用数量已达上限", 403);
+    if (Number(rows?.n ?? 0) >= storage.maxAppDataRowsPerUser) return jsonError("保存数据的应用数量已达上限", 403);
+  }
+  // App data counts toward the account's storage like saved versions do. Shrinking what is
+  // already there is always allowed, so a full account can still clean up.
+  const growth = bytes - Number(existing?.bytes ?? 0);
+  if (growth > 0) {
+    const [used, limit] = await Promise.all([storageUsed(auth.userId), storageLimit(auth.userId)]);
+    if (used + growth > limit) return jsonError("账号的存储空间已满，数据仅保存在本机。", 413);
   }
   await run(
     `INSERT INTO app_storage (project_id, user_id, data, updated_at) VALUES (?, ?, ?, ?)

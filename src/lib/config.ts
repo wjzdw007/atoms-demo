@@ -18,7 +18,18 @@ function oneOf<T extends string>(name: string, allowed: readonly T[], fallback: 
   return raw && allowed.includes(raw) ? raw : fallback;
 }
 
-export type ModelOption = { id: string; label: string; premium: boolean };
+function timeZone(name: string, fallback: string) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: raw });
+    return raw;
+  } catch {
+    return fallback;
+  }
+}
+
+export type ModelOption ={ id: string; label: string; premium: boolean };
 
 function parseModels(raw: string | undefined, fallback: string, free: string[]): ModelOption[] {
   const list = (raw || "")
@@ -105,6 +116,8 @@ function build() {
       /** Jobs one user may run at the same time, and the ceiling for the whole server. */
       maxConcurrentPerUser: int("MAX_CONCURRENT_JOBS_PER_USER", 2),
       maxConcurrent: int("MAX_CONCURRENT_JOBS", 8),
+      /** Connections that may follow one job's progress at the same time (tabs, devices). */
+      maxStreamsPerJob: int("MAX_STREAMS_PER_JOB", 6),
     },
     quota: {
       /** Free generations per day. */
@@ -122,6 +135,8 @@ function build() {
        * its own table and never decremented by refunds.
        */
       siteDaily: int("SITE_DAILY_GENERATION_LIMIT", 500),
+      /** Time zone whose midnight starts a new day of allowances (IANA name, e.g. Asia/Shanghai). */
+      timezone: timeZone("QUOTA_TIMEZONE", "UTC"),
     },
     billing: {
       /**
@@ -152,6 +167,8 @@ function build() {
       maxProjectsPerUser: int("MAX_PROJECTS_PER_USER", 50),
       /** Total size of all saved versions one account may hold. */
       maxBytesPerUser: int("MAX_STORAGE_BYTES_PER_USER", 50_000_000),
+      /** The same for a guest account, which anyone can create for free. */
+      maxBytesPerGuest: int("MAX_STORAGE_BYTES_PER_GUEST", 10_000_000),
       /** Published apps one account may keep data in. */
       maxAppDataRowsPerUser: int("MAX_APP_DATA_ROWS_PER_USER", 200),
     },
@@ -162,6 +179,10 @@ function build() {
       guestsPerHour: int("RATE_LIMIT_GUESTS", 20),
       /** Free, storage-heavy actions (restore a version, remix an app) per user per hour. */
       copiesPerHour: int("RATE_LIMIT_COPIES", 30),
+      /** Saves of a generated app's data per user per minute (the page batches them itself). */
+      appDataPerMinute: int("RATE_LIMIT_APP_DATA", 120),
+      /** New projects per user per hour. */
+      projectsPerHour: int("RATE_LIMIT_PROJECTS", 60),
     },
     admin: {
       /** Bearer token for the admin API. Unset = the admin API does not exist. */

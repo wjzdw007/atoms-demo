@@ -1,4 +1,5 @@
 import { getUser, jsonError } from "@/lib/auth";
+import { readJson } from "@/lib/body";
 import { config } from "@/lib/config";
 import { createOrder, getBalance } from "@/lib/store";
 
@@ -10,7 +11,7 @@ export async function POST(request: Request) {
   if (billing.mode === "off") return jsonError("当前未开放购买", 403);
   if (user.is_guest) return jsonError("请先用 Google 登录再购买，这样积分才不会丢失。", 403);
 
-  const body = await request.json().catch(() => null);
+  const body = await readJson(request);
   const pack = billing.packs.find((p) => p.id === String(body?.packId ?? ""));
   if (!pack) return jsonError("套餐不存在");
   if ((await getBalance(user.id)) + pack.credits > billing.maxBalance) {

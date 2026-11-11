@@ -188,6 +188,12 @@ async function hasColumn(client: Client, table: string, column: string) {
   return res.rows.some((row) => row.name === column);
 }
 
+/** Google's own stable id for an account; at most one user per Google account. */
+async function googleSubject(client: Client) {
+  if (!(await hasColumn(client, "users", "google_sub"))) await client.execute("ALTER TABLE users ADD COLUMN google_sub TEXT");
+  await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL");
+}
+
 const MIGRATIONS: Migration[] = [
   {
     // Bumped to invalidate every existing session of a user (logout, credential change).
@@ -219,6 +225,21 @@ const MIGRATIONS: Migration[] = [
     id: "005_orders_one_pending",
     sql: onePendingOrder,
     needed: async () => true,
+  },
+  {
+    // Accounts are tied to Google's subject id, not to the email address, which can change hands.
+    // Filled in the next time each existing account signs in.
+    id: "006_users_google_sub",
+    sql: googleSubject,
+    needed: async () => true,
+  },
+  {
+    // Changes nothing in the database: the time this is recorded marks when the session cookie
+    // got its `__Host-` name. Sessions older than that are still accepted under the old name
+    // (see auth.ts).
+    id: "007_session_cookie_prefix",
+    sql: "SELECT 1",
+    needed: async () => false,
   },
 ];
 

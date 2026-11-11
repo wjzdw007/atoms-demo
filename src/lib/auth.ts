@@ -6,11 +6,29 @@ import { queryOne, run } from "./db";
 import { clientIp, rateLimit } from "./rate-limit";
 import type { User } from "./types";
 
-const COOKIE = "atoms_session";
-const MAX_AGE = 60 * 60 * 24 * config().auth.sessionDays;
-
 /** See `config().auth.secureCookies`. */
 export const secureCookies = config().auth.secureCookies;
+
+const LEGACY_COOKIE = "atoms_session";
+/**
+ * Over HTTPS the cookie carries the `__Host-` prefix: browsers then only accept it from this
+ * exact host, with Secure and Path=/, so another site under the same parent domain cannot plant
+ * or replace a session here. The prefix needs HTTPS, hence the plain name in development.
+ */
+const COOKIE = secureCookies ? "__Host-atoms_session" : LEGACY_COOKIE;
+const MAX_AGE = 60 * 60 * 24 * config().auth.sessionDays;
+/**
+ * Sessions issued under the old name before the prefix was introduced stay valid until they
+ * expire, so nobody is signed out (and no guest loses their projects) by the change. The moment
+ * of the change is when its marker migration was recorded, plus an hour for a deploy in
+ * progress; a token issued later is only accepted under the new name.
+ */
+let legacyCutoff: Promise<number> | null = null;
+function legacyIssuedBefore() {
+  return (legacyCutoff ??= queryOne<{ applied_at: number }>(
+    "SELECT applied_at FROM schema_migrations WHERE id = '007_session_cookie_prefix'",
+  ).then((row) => (row ? Number(row.applied_at) / 1000 + 3600 : 0)));
+}
 
 function secret() {
   const value = process.env.AUTH_SECRET;
@@ -35,6 +53,7 @@ export async function startSession(userId: string) {
     path: "/",
     maxAge: MAX_AGE,
   });
+  if (COOKIE !== LEGACY_COOKIE) jar.delete(LEGACY_COOKIE);
 }
 
 /** Signs out everywhere: tokens issued before this moment stop being accepted. */
@@ -43,6 +62,7 @@ export async function endSession() {
   if (user) await revokeSessions(user.id);
   const jar = await cookies();
   jar.delete(COOKIE);
+  if (COOKIE !== LEGACY_COOKIE) jar.delete(LEGACY_COOKIE);
 }
 
 export async function revokeSessions(userId: string) {
@@ -51,11 +71,13 @@ export async function revokeSessions(userId: string) {
 
 export async function getUser(): Promise<User | null> {
   const jar = await cookies();
-  const token = jar.get(COOKIE)?.value;
+  const current = jar.get(COOKIE)?.value;
+  const token = current ?? jar.get(LEGACY_COOKIE)?.value;
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret(), { algorithms: ["HS256"] });
     if (!payload.sub) return null;
+    if (!current && COOKIE !== LEGACY_COOKIE && Number(payload.iat ?? Infinity) >= (await legacyIssuedBefore())) return null;
     const row = await queryOne<User & { session_version: number }>(
       "SELECT id, email, name, is_guest, session_version FROM users WHERE id = ?",
       [payload.sub],

@@ -30,7 +30,14 @@ describe("migrate", () => {
       "003_clear_password_hashes",
       "004_versions_unique_number",
       "005_orders_one_pending",
+      "006_users_google_sub",
+      "007_session_cookie_prefix",
     ]);
+    // One user per Google account, enforced by the database.
+    await client.execute("UPDATE users SET google_sub = 'g-1' WHERE id = 'old'");
+    await expect(
+      client.execute("INSERT INTO users (id, email, name, created_at, google_sub) VALUES ('dup', 'd@example.com', 'd', 1, 'g-1')"),
+    ).rejects.toThrow();
   });
 
   it("repairs duplicate version numbers and extra unpaid orders before making them impossible", async () => {

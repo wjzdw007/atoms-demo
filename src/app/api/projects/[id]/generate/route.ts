@@ -1,4 +1,5 @@
 import { getUser, jsonError } from "@/lib/auth";
+import { readJson } from "@/lib/body";
 import { config } from "@/lib/config";
 import { cancelJob, finishJob, getJob, startJob, streamJob } from "@/lib/jobs";
 import { clientIpHash } from "@/lib/rate-limit";
@@ -23,7 +24,7 @@ export async function POST(request: Request, ctx: Params) {
   if (auth.error) return auth.error;
   const { user, project } = auth;
 
-  const body = await request.json().catch(() => null);
+  const body = await readJson(request);
   const prompt = String(body?.prompt ?? "").trim().slice(0, 4000);
   if (!prompt) return jsonError("请输入需求");
   // Only models on the server's allowlist can be requested; anything else falls back to the default
@@ -102,7 +103,9 @@ export async function GET(request: Request, ctx: Params) {
   const job = getJob(auth.project.id, auth.user.id);
   if (!job) return new Response(null, { status: 204 });
   const from = Number(new URL(request.url).searchParams.get("from") ?? 0) || 0;
-  return new Response(streamJob(job, from, request.signal), {
+  const stream = streamJob(job, from, request.signal);
+  if (!stream) return jsonError("这个任务的进度已经在太多窗口里打开了，请关掉一些再试。", 429);
+  return new Response(stream, {
     headers: {
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",

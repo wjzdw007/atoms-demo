@@ -1,7 +1,15 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { tempDatabase } from "./helpers";
 
-tempDatabase({ DAILY_FREE_GUEST: "2", DAILY_FREE_USER: "2", DAILY_FREE_PER_IP: "3", BILLING_MAX_BALANCE: "150" });
+tempDatabase({
+  DAILY_FREE_GUEST: "2",
+  DAILY_FREE_USER: "2",
+  DAILY_FREE_PER_IP: "3",
+  BILLING_MAX_BALANCE: "150",
+  MAX_PROJECTS_PER_USER: "5",
+  MAX_STORAGE_BYTES_PER_USER: "5000",
+  MAX_STORAGE_BYTES_PER_GUEST: "1000",
+});
 
 type Store = typeof import("@/lib/store");
 type Db = typeof import("@/lib/db");
@@ -129,6 +137,72 @@ describe("versions", () => {
     await store.addVersion(projectId, "中".repeat(100), "x");
     expect(await store.storageUsed(user.id)).toBe(300);
   });
+  it("counts the data kept in generated apps too, and gives guests a smaller share", async () => {
+    const [user, visitor] = [await addUser(member("hoarder")), await addUser(guest("hoarder-guest"))];
+    for (const owner of [user, visitor]) {
+      const projectId = await store.createProject(owner.id, "应用");
+      await store.addVersion(projectId, "a".repeat(400), "x");
+      await db.run("INSERT INTO app_storage (project_id, user_id, data, updated_at) VALUES (?, ?, ?, 1)", [
+        projectId,
+        owner.id,
+        "中".repeat(200),
+      ]);
+      expect(await store.storageUsed(owner.id)).toBe(1000);
+    }
+    expect(await store.hasStorageRoom(user.id, 4000)).toBe(true);
+    expect(await store.hasStorageRoom(user.id, 4001)).toBe(false);
+    expect(await store.hasStorageRoom(visitor.id, 0)).toBe(true);
+    expect(await store.hasStorageRoom(visitor.id, 1)).toBe(false);
+  });
+});
+
+describe("purgeStaleGuests", () => {
+  it("removes guests whose session can no longer exist, with everything they own", async () => {
+    const longAgo = Date.now() - 40 * 24 * 3600 * 1000;
+    const add = async (id: string, isGuest: number, createdAt: number) => {
+      await db.run("INSERT INTO users (id, email, name, is_guest, created_at) VALUES (?, ?, ?, ?, ?)", [
+        id,
+        isGuest ? null : `${id}@example.com`,
+        id,
+        isGuest,
+        createdAt,
+      ]);
+      const projectId = await store.createProject(id, id);
+      const version = await store.addVersion(projectId, "<html></html>", "x");
+      await store.addMessage(projectId, "user", "hi");
+      await db.run("INSERT INTO app_storage (project_id, user_id, data, updated_at) VALUES (?, ?, '{}', 1)", [projectId, id]);
+      return { projectId, version };
+    };
+    const gone = await add("stale-guest", 1, longAgo);
+    const publisher = await add("stale-publisher", 1, longAgo);
+    await db.run("UPDATE projects SET published_slug = 'kept', published_version_id = ? WHERE id = ?", [
+      publisher.version.id,
+      publisher.projectId,
+    ]);
+    const recent = await add("recent-guest", 1, Date.now());
+    const account = await add("old-member", 0, longAgo);
+
+    expect(await store.purgeStaleGuests()).toBe(1);
+    for (const table of ["projects", "versions", "messages", "app_storage"]) {
+      const column = table === "projects" ? "id" : "project_id";
+      expect(await db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`, [gone.projectId])).toEqual([]);
+      for (const kept of [publisher, recent, account]) {
+        expect(await db.query(`SELECT 1 FROM ${table} WHERE ${column} = ?`, [kept.projectId])).toHaveLength(1);
+      }
+    }
+    const users = await db.query<{ id: string }>(
+      "SELECT id FROM users WHERE id IN ('stale-guest', 'stale-publisher', 'recent-guest', 'old-member') ORDER BY id",
+    );
+    expect(users.map((u) => u.id)).toEqual(["old-member", "recent-guest", "stale-publisher"]);
+    expect(await store.purgeStaleGuests()).toBe(0);
+  });
+});
+
+describe("addMessage", () => {
+  it("writes nothing for a project that no longer exists", async () => {
+    await store.addMessage("deleted-project", "assistant", "late note");
+    expect(await db.query("SELECT 1 FROM messages WHERE project_id = 'deleted-project'")).toEqual([]);
+  });
 });
 
 describe("adoptGuest", () => {
@@ -152,6 +226,23 @@ describe("adoptGuest", () => {
     // Where both had data for the same app, the account's own copy is the one that stays.
     expect(data.map((row) => row.data)).toEqual(["account-copy", "guest-data"]);
     expect(await db.query("SELECT 1 FROM app_storage WHERE user_id = ?", [visitor.id])).toEqual([]);
+  });
+});
+
+describe("adoptGuest and the project limit", () => {
+  it("moves only as many projects as the account has room for, newest first", async () => {
+    const [visitor, account] = [await addUser(guest("many")), await addUser(member("nearly-full"))];
+    for (let i = 0; i < 4; i++) await store.createProject(account.id, `已有 ${i}`);
+    const made: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = await store.createProject(visitor.id, `访客 ${i}`);
+      await db.run("UPDATE projects SET updated_at = ? WHERE id = ?", [1000 + i, id]);
+      made.push(id);
+    }
+    expect(await store.adoptGuest(visitor.id, account.id)).toBe(1);
+    expect(await store.countProjects(account.id)).toBe(5);
+    expect(await store.getOwnedProject(made[2], account.id)).not.toBeNull();
+    expect(await store.adoptGuest(visitor.id, account.id)).toBe(0);
   });
 });
 

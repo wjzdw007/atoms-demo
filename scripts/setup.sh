@@ -13,6 +13,7 @@
 #                  accept the Let's Encrypt Subscriber Agreement.
 #   PORT           local port of the app (default 3100)
 #   NODE_VERSION   Node release to install under ~/atoms-demo/node (default 24.14.0)
+#   NODE_SHA256    checksum of that Node tarball; needed to pin a version other than the default
 #   NODE_MIRROR    where to download Node from (default https://nodejs.org/dist; in mainland
 #                  China use https://npmmirror.com/mirrors/node)
 #   NPM_REGISTRY   npm registry for builds on the server (default https://registry.npmjs.org;
@@ -42,8 +43,8 @@ if [ "${1:-}" != "--on-server" ]; then
   say "Copying setup files to $HOST"
   git archive HEAD deploy scripts/setup.sh | ssh "$HOST" 'rm -rf "$HOME/.atoms-setup" && mkdir -p "$HOME/.atoms-setup" && tar -x -C "$HOME/.atoms-setup"'
   # -t: sudo on the server may ask for a password.
-  ssh -t "$HOST" "$(printf 'PORT=%q NODE_VERSION=%q NODE_MIRROR=%q NPM_REGISTRY=%q DOMAIN=%q EMAIL=%q' \
-    "$PORT" "$NODE_VERSION" "$NODE_MIRROR" "$NPM_REGISTRY" "$DOMAIN" "$EMAIL") bash \"\$HOME/.atoms-setup/scripts/setup.sh\" --on-server"
+  ssh -t "$HOST" "$(printf 'PORT=%q NODE_VERSION=%q NODE_SHA256=%q NODE_MIRROR=%q NPM_REGISTRY=%q DOMAIN=%q EMAIL=%q' \
+    "$PORT" "$NODE_VERSION" "${NODE_SHA256:-}" "$NODE_MIRROR" "$NPM_REGISTRY" "$DOMAIN" "$EMAIL") bash \"\$HOME/.atoms-setup/scripts/setup.sh\" --on-server"
   if [ "${SETUP_ONLY:-}" = "1" ]; then
     say "Server is ready. Deploy with: DEPLOY_HOST=$HOST ./scripts/deploy.sh"
   else
@@ -89,7 +90,29 @@ if [ "$("$ATOMS_HOME/node/bin/node" -v 2>/dev/null || true)" != "v$NODE_VERSION"
   mkdir -p "$ATOMS_HOME"
   rm -rf "$ATOMS_HOME/node.new"
   mkdir "$ATOMS_HOME/node.new"
-  curl -fsSL "$NODE_MIRROR/v$NODE_VERSION/node-v$NODE_VERSION-linux-$arch.tar.gz" | tar -xz --strip-components=1 -C "$ATOMS_HOME/node.new"
+  tarball="node-v$NODE_VERSION-linux-$arch.tar.gz"
+  curl -fsSL -o "$ATOMS_HOME/$tarball" "$NODE_MIRROR/v$NODE_VERSION/$tarball"
+  # Never unpack a download that has not been checked. The checksum comes from NODE_SHA256, or
+  # from the values pinned here for the default version (taken from nodejs.org), or as a last
+  # resort from the mirror's own list, which only guards against a damaged download.
+  expected="${NODE_SHA256:-}"
+  if [ -z "$expected" ]; then
+    case "$NODE_VERSION-$arch" in
+      24.14.0-x64) expected=dbf5b8665dec15e59e6359a517fefb47b23fdb9152d8def975b9bca3dfc6d355 ;;
+      24.14.0-arm64) expected=f44740cd218de8127f1c44c41510a3a740fa5c9c8d1cdce1c3bedada79f3cde7 ;;
+      *)
+        say "No pinned checksum for Node $NODE_VERSION; using the list published next to the download (set NODE_SHA256 to pin it)"
+        expected="$(curl -fsSL "$NODE_MIRROR/v$NODE_VERSION/SHASUMS256.txt" | awk -v f="$tarball" '$2 == f { print $1 }')"
+        ;;
+    esac
+  fi
+  actual="$(sha256sum "$ATOMS_HOME/$tarball" | awk '{ print $1 }')"
+  if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+    rm -f "$ATOMS_HOME/$tarball"
+    die "Node download failed its checksum (expected ${expected:-none}, got $actual)"
+  fi
+  tar -xzf "$ATOMS_HOME/$tarball" --strip-components=1 -C "$ATOMS_HOME/node.new"
+  rm -f "$ATOMS_HOME/$tarball"
   "$ATOMS_HOME/node.new/bin/node" -v >/dev/null || die "the downloaded Node does not run"
   rm -rf "$ATOMS_HOME/node"
   mv "$ATOMS_HOME/node.new" "$ATOMS_HOME/node"

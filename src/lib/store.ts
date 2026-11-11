@@ -106,14 +106,13 @@ export async function addMessage(
   versionId: string | null = null,
 ): Promise<Message> {
   const message: Message = { id: nanoid(12), role, content, version_id: versionId, created_at: Date.now() };
-  await run("INSERT INTO messages (id, project_id, role, content, version_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", [
-    message.id,
-    projectId,
-    role,
-    content,
-    versionId,
-    message.created_at,
-  ]);
+  // Only while the project exists: a job that is still winding down after its project was deleted
+  // must not leave messages behind that belong to nothing.
+  await run(
+    `INSERT INTO messages (id, project_id, role, content, version_id, created_at)
+     SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM projects WHERE id = ?)`,
+    [message.id, projectId, role, content, versionId, message.created_at, projectId],
+  );
   return message;
 }
 
@@ -149,7 +148,29 @@ export async function countProjects(userId: string) {
 // purchased credits. A site-wide daily ceiling bounds the total model bill no matter what.
 // ---------------------------------------------------------------------------------------------
 
-const today = () => new Date().toISOString().slice(0, 10);
+/**
+ * The day the allowances are counted in, as YYYY-MM-DD in the configured time zone
+ * (`QUOTA_TIMEZONE`, UTC by default), so "come back tomorrow" can mean the users' own midnight.
+ */
+const dayFormat = () =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: config().quota.timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+
+function dayParts(now = Date.now()) {
+  const parts = Object.fromEntries(dayFormat().formatToParts(new Date(now)).map((p) => [p.type, p.value]));
+  const elapsed = (Number(parts.hour) * 3600 + Number(parts.minute) * 60 + Number(parts.second)) * 1000 + (now % 1000);
+  return { day: `${parts.year}-${parts.month}-${parts.day}`, start: now - elapsed };
+}
+
+const today = () => dayParts().day;
 
 export type ChargeSource = "free" | "credits";
 
@@ -187,8 +208,7 @@ export async function chargeGeneration(
   | { ok: false; reason: "site" | "empty" | "user_max" | "ip" }
 > {
   const { quota } = config();
-  const day = today();
-  const dayStart = Date.parse(`${day}T00:00:00Z`);
+  const { day, start: dayStart } = dayParts();
 
   // Per-account ceiling (free + paid), so one account cannot use up the whole site's budget.
   const [freeRow, paidRow] = await Promise.all([
@@ -280,19 +300,63 @@ export async function releaseGeneration(userId: string, charge: { source: Charge
 
 export const usageDay = today;
 
-/** Bytes of saved versions across all of a user's projects. */
+/**
+ * Bytes an account holds: the saved versions of its projects, plus the data it keeps in generated
+ * apps. Both count, so neither can be used to fill the disk past the account's limit.
+ */
 export async function storageUsed(userId: string) {
   const row = await queryOne<{ total: number | null }>(
     // LENGTH of text counts characters; the limit is in bytes, and Chinese text is three each.
-    `SELECT SUM(LENGTH(CAST(v.html AS BLOB))) AS total FROM versions v
-     JOIN projects p ON p.id = v.project_id WHERE p.user_id = ?`,
-    [userId],
+    `SELECT
+       COALESCE((SELECT SUM(LENGTH(CAST(v.html AS BLOB))) FROM versions v
+                 JOIN projects p ON p.id = v.project_id WHERE p.user_id = ?), 0)
+       + COALESCE((SELECT SUM(LENGTH(CAST(a.data AS BLOB))) FROM app_storage a WHERE a.user_id = ?), 0) AS total`,
+    [userId, userId],
   );
   return Number(row?.total ?? 0);
 }
 
+/** A guest account costs nothing to make, so it gets a much smaller share of the disk. */
+export async function storageLimit(userId: string) {
+  const row = await queryOne<{ is_guest: number }>("SELECT is_guest FROM users WHERE id = ?", [userId]);
+  const { storage } = config();
+  return row?.is_guest ? Math.min(storage.maxBytesPerGuest, storage.maxBytesPerUser) : storage.maxBytesPerUser;
+}
+
 export async function hasStorageRoom(userId: string, extraBytes = 0) {
-  return (await storageUsed(userId)) + extraBytes <= config().storage.maxBytesPerUser;
+  const [used, limit] = await Promise.all([storageUsed(userId), storageLimit(userId)]);
+  return used + extraBytes <= limit;
+}
+
+/**
+ * Removes guest accounts nobody can reach any more, with everything they own. A guest is only a
+ * cookie that is never renewed, so once it is older than a session can last the account is
+ * unreachable. Guests that published an app are kept: the share link is still in use by others.
+ */
+export async function purgeStaleGuests(now = Date.now()) {
+  const cutoff = now - (config().auth.sessionDays + 1) * 24 * 3600 * 1000;
+  const stale = await query<{ id: string }>(
+    `SELECT u.id FROM users u WHERE u.is_guest = 1 AND u.created_at < ?
+       AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.user_id = u.id AND p.published_slug IS NOT NULL)
+       AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.user_id = u.id AND j.status = 'running')
+     LIMIT 2000`,
+    [cutoff],
+  );
+  const owned = "(SELECT id FROM projects WHERE user_id = ?)";
+  for (const { id } of stale) {
+    await transaction([
+      { sql: `DELETE FROM race_candidates WHERE project_id IN ${owned}`, args: [id] },
+      { sql: `DELETE FROM messages WHERE project_id IN ${owned}`, args: [id] },
+      { sql: `DELETE FROM versions WHERE project_id IN ${owned}`, args: [id] },
+      { sql: `DELETE FROM app_storage WHERE user_id = ? OR project_id IN ${owned}`, args: [id, id] },
+      { sql: "DELETE FROM projects WHERE user_id = ?", args: [id] },
+      { sql: "DELETE FROM usage WHERE user_id = ?", args: [id] },
+      { sql: "DELETE FROM jobs WHERE user_id = ?", args: [id] },
+      // Still a guest: an account that signed in since the list was read is left alone.
+      { sql: "DELETE FROM users WHERE id = ? AND is_guest = 1", args: [id] },
+    ]);
+  }
+  return stale.length;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -395,7 +459,15 @@ export async function settleOrder(orderId: string, userId: string) {
  */
 export function adoptGuest(guestId: string, userId: string) {
   return withTransaction(async (tx) => {
-    const moved = await tx.execute({ sql: "UPDATE projects SET user_id = ? WHERE user_id = ?", args: [userId, guestId] });
+    // The account's project limit still holds: the guest's most recent projects move over, as
+    // many as fit. Without this, signing in again and again as a new guest would get past it.
+    const held = await tx.execute({ sql: "SELECT COUNT(*) AS n FROM projects WHERE user_id = ?", args: [userId] });
+    const room = Math.max(0, config().storage.maxProjectsPerUser - Number(held.rows[0]?.n ?? 0));
+    const moved = await tx.execute({
+      sql: `UPDATE projects SET user_id = ? WHERE id IN (
+              SELECT id FROM projects WHERE user_id = ? ORDER BY updated_at DESC LIMIT ?)`,
+      args: [userId, guestId, room],
+    });
     await tx.execute({ sql: "UPDATE OR IGNORE app_storage SET user_id = ? WHERE user_id = ?", args: [userId, guestId] });
     await tx.execute({ sql: "DELETE FROM app_storage WHERE user_id = ?", args: [guestId] });
     // A job still running for the guest is refunded to the account if a restart cuts it off.

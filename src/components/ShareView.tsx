@@ -54,6 +54,11 @@ export function ShareView({
           {busy ? "正在复制…" : "Remix 这个应用"}
         </button>
       </header>
+      {/* The app below is written by a user's prompt, not by this site, and the address bar
+          cannot tell a visitor that. Say so, where a page asking for a password would be seen. */}
+      <p className="shrink-0 border-b border-line bg-raised px-3 py-1 text-[11px] leading-snug text-muted">
+        以下内容由用户生成，与本站无关。请不要在其中输入密码、验证码或支付信息。
+      </p>
       <div className="min-h-0 flex-1">
         <PreviewFrame html={html} appId={projectId} />
       </div>

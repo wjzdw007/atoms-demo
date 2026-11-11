@@ -39,6 +39,20 @@ describe("checkScripts", () => {
     );
     expect(checkScripts(html)).toEqual([]);
   });
+  it("stays fast on a large document full of scripts that are never closed", () => {
+    // Model output can be anything. Each of these used to be rescanned to the end of the document
+    // (seconds of blocked server at this size); the scan is now a single pass.
+    for (const filler of ["<script>", "<script ", "<script></script "]) {
+      const html = page(filler.repeat(Math.floor(800_000 / filler.length)));
+      const started = Date.now();
+      expect(checkScripts(html)).toEqual([]);
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
+  });
+  it("still checks the scripts that are closed in such a document", () => {
+    const issues = checkScripts(page("<script>let a = ;</script>" + "<script>".repeat(1000)));
+    expect(issues).toHaveLength(1);
+  });
   it("only compiles: the script never runs", () => {
     const g = globalThis as { __ran?: boolean };
     checkScripts(page("<script>globalThis.__ran = true;</script>"));

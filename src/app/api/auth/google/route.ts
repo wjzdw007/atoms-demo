@@ -4,7 +4,7 @@ import { nanoid } from "nanoid";
 import { secureCookies } from "@/lib/auth";
 import { config as appConfig } from "@/lib/config";
 import { clientIp, rateLimit } from "@/lib/rate-limit";
-import { googleConfig, OAUTH_STATE_COOKIE } from "@/lib/google";
+import { googleConfig, oauthStateCookie } from "@/lib/google";
 
 /** Step 1 of the OAuth authorization-code flow: send the browser to Google's consent screen. */
 export async function GET(request: Request) {
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
 
   const state = nanoid(24);
   const jar = await cookies();
-  jar.set(OAUTH_STATE_COOKIE, state, {
+  jar.set(oauthStateCookie(secureCookies), state, {
     httpOnly: true,
     sameSite: "lax",
     secure: secureCookies,
