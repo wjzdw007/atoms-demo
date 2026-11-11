@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 /**
  * Model picker and race-mode controls, shared by the home page (first request of a new project)
  * and the workspace (every later request), so both offer exactly the same choices.
@@ -23,7 +25,7 @@ export function savedModel(models: ModelOption[], credits: number) {
   return match && (!match.premium || credits > 0) ? match.id : null;
 }
 
-/** The lane chips shown above the input while race mode is on. */
+/** The model chips shown under the input controls while race mode is on. */
 export function RaceLanePicker({
   models,
   credits,
@@ -41,37 +43,69 @@ export function RaceLanePicker({
   onToggle: (id: string) => void;
 }) {
   const short = raceModels.length > unitsLeft;
+  // Models that need credits are only listed once the user has some; until then one line says so.
+  const usable = models.filter((m) => !m.premium || credits > 0);
+  const lockedCount = models.length - usable.length;
+  const full = raceModels.length >= raceMax;
   return (
-    <div className="mb-2 rounded-xl bg-accent-soft p-2 text-left">
-      <div className="mb-1.5 text-xs">
-        🏁 竞速模式：选 2–{raceMax} 个模型同时构建，完成后挑一版保留。本次消耗 {raceModels.length} 次额度。
-        {short && (
-          <span className="mt-1 block text-bad">
-            额度不够：今天的免费次数和积分加起来还剩 {unitsLeft} 次。可以少选模型、关掉竞速，或到「额度」页补充积分。
+    <div className="mt-2 border-t border-line px-1 pt-2.5 text-left">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs">
+        <span className="font-medium text-ink">
+          选择参赛模型
+          <span className="ml-1.5 font-normal text-muted">
+            已选 {raceModels.length}，可选 2–{raceMax} 个
           </span>
-        )}
+        </span>
+        <span className="text-muted">消耗 {raceModels.length} 次额度</span>
       </div>
-      <div className="flex flex-wrap gap-1.5">
-        {models.map((m) => {
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {usable.map((m) => {
           const on = raceModels.includes(m.id);
-          const locked = m.premium && credits <= 0;
           return (
             <button
               key={m.id}
               type="button"
               aria-pressed={on}
-              disabled={locked || (!on && raceModels.length >= raceMax)}
+              disabled={!on && full}
               onClick={() => onToggle(m.id)}
-              title={locked ? "需要积分" : m.premium ? "消耗 1 积分" : "使用免费次数"}
-              className={`rounded-full border px-2.5 py-1 text-xs disabled:opacity-40 ${
-                on ? "border-accent bg-accent text-white" : "border-line bg-panel text-ink"
+              title={!on && full ? `最多选 ${raceMax} 个` : m.premium ? "消耗 1 积分" : "使用免费次数"}
+              className={`rounded-lg border px-2.5 py-1 text-xs transition disabled:opacity-40 ${
+                on
+                  ? "border-accent bg-accent-soft font-medium text-accent"
+                  : "border-line bg-panel text-ink hover:border-accent"
               }`}
             >
+              {on && <span aria-hidden>✓ </span>}
               {m.label}
+              {m.premium && <span className="ml-1 font-normal opacity-70">1 积分</span>}
             </button>
           );
         })}
       </div>
+      <p className={`mt-2 text-xs ${short ? "text-bad" : "text-muted"}`}>
+        {short ? (
+          <>
+            额度不够：免费次数和积分加起来还剩 {unitsLeft} 次。少选一个模型，或
+            <Link href="/billing" className="underline">
+              补充积分
+            </Link>
+            。
+          </>
+        ) : (
+          <>
+            几个模型同时构建同一个需求，完成后挑一版保留。
+            {lockedCount > 0 && (
+              <>
+                另有 {lockedCount} 个高级模型，
+                <Link href="/billing" className="text-accent hover:underline">
+                  有积分后可选
+                </Link>
+                。
+              </>
+            )}
+          </>
+        )}
+      </p>
     </div>
   );
 }

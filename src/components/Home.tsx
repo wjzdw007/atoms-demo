@@ -109,16 +109,6 @@ export function Home({
             create(prompt);
           }}
         >
-          {racing && (
-            <RaceLanePicker
-              models={models}
-              credits={credits}
-              raceMax={raceMax}
-              raceModels={raceModels}
-              unitsLeft={freeLeft + credits}
-              onToggle={(id) => setRaceModels((list) => nextRaceModels(list, id, raceMax))}
-            />
-          )}
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
@@ -151,6 +141,16 @@ export function Home({
               {busy ? "正在创建…" : racing ? "开始竞速" : "开始构建"}
             </button>
           </div>
+          {racing && (
+            <RaceLanePicker
+              models={models}
+              credits={credits}
+              raceMax={raceMax}
+              raceModels={raceModels}
+              unitsLeft={freeLeft + credits}
+              onToggle={(id) => setRaceModels((list) => nextRaceModels(list, id, raceMax))}
+            />
+          )}
         </form>
         {error && <p className="mt-3 text-sm text-bad">{error}</p>}
 

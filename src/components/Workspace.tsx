@@ -596,16 +596,6 @@ export function Workspace({
             }}
           >
             <div className="rounded-2xl border border-line bg-panel p-2 focus-within:border-accent">
-              {raceOn && !busy && (
-                <RaceLanePicker
-                  models={models}
-                  credits={quota.credits}
-                  raceMax={raceMax}
-                  raceModels={raceModels}
-                  unitsLeft={quota.freeLeft + quota.credits}
-                  onToggle={toggleRaceModel}
-                />
-              )}
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -651,6 +641,16 @@ export function Workspace({
                   </button>
                 )}
               </div>
+              {raceOn && !busy && models.length > 1 && !mock && (
+                <RaceLanePicker
+                  models={models}
+                  credits={quota.credits}
+                  raceMax={raceMax}
+                  raceModels={raceModels}
+                  unitsLeft={quota.freeLeft + quota.credits}
+                  onToggle={toggleRaceModel}
+                />
+              )}
             </div>
           </form>
         </section>
