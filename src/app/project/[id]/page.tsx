@@ -3,6 +3,7 @@ import { Workspace } from "@/components/Workspace";
 import { config } from "@/lib/config";
 import { getUser } from "@/lib/auth";
 import { jobSnapshot } from "@/lib/jobs";
+import { listProjectCards } from "@/lib/projects";
 import { getLatestVersion, getOwnedProject, getQuota, listCandidates, listMessages, listVersions } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -14,15 +15,20 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   const project = await getOwnedProject(id, user.id);
   if (!project) notFound();
 
-  const [messages, versions, latest, quota] = await Promise.all([
+  const [messages, versions, latest, quota, projects] = await Promise.all([
     listMessages(id),
     listVersions(id),
     getLatestVersion(id),
     getQuota(user),
+    listProjectCards(user.id),
   ]);
   const candidates = await listCandidates(id);
   return (
     <Workspace
+      // Moving between projects through the sidebar keeps this page mounted: a new key gives
+      // each project its own fresh workspace state instead of the previous one's.
+      key={project.id}
+      projects={projects}
       project={{
         id: project.id,
         title: project.title,

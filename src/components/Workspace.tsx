@@ -4,6 +4,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Brand } from "@/components/Brand";
+import type { ProjectCard } from "@/components/ProjectList";
+import { ProjectSidebar } from "@/components/ProjectSidebar";
 import { PENDING_KEY } from "@/components/Home";
 import { Mascot, type TeamName } from "@/components/Mascot";
 import { extractHtml } from "@/lib/html";
@@ -79,8 +81,13 @@ export type QuotaInfo = { freeLimit: number; freeLeft: number; credits: number }
 const PREVIEW_INTERVAL = 150;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const SIDEBAR_KEY = "atoms:sidebar";
+/** The sidebar's state within this page session, so switching projects does not make it blink. */
+let sidebarMemo: boolean | null = null;
+
 export function Workspace({
   project,
+  projects,
   initialMessages,
   initialVersions,
   initialHtml,
@@ -92,6 +99,8 @@ export function Workspace({
   mock,
 }: {
   project: ProjectInfo;
+  /** All of the user's projects, for the sidebar. */
+  projects: ProjectCard[];
   initialMessages: Message[];
   initialVersions: VersionMeta[];
   initialHtml: string;
@@ -108,6 +117,32 @@ export function Workspace({
 }) {
   const [title, setTitle] = useState(project.title);
   const [renaming, setRenaming] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(sidebarMemo ?? false);
+
+  // The sidebar starts closed (a phone has no room for it) and opens after mount where it was
+  // left open last time, or by default on a screen wide enough to spare the width.
+  useEffect(() => {
+    if (sidebarMemo !== null || window.innerWidth < 768) return;
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(SIDEBAR_KEY);
+    } catch {
+      /* preference only */
+    }
+    sidebarMemo = saved === "1" || (saved === null && window.innerWidth >= 1280);
+    if (sidebarMemo) setTimeout(() => setSidebarOpen(true), 0);
+  }, []);
+
+  function toggleSidebar() {
+    const next = !sidebarOpen;
+    sidebarMemo = next;
+    setSidebarOpen(next);
+    try {
+      localStorage.setItem(SIDEBAR_KEY, next ? "1" : "0");
+    } catch {
+      /* preference only */
+    }
+  }
   const [messages, setMessages] = useState(initialMessages);
   const [versions, setVersions] = useState(initialVersions);
   const [latestHtml, setLatestHtml] = useState(initialHtml);
@@ -499,6 +534,20 @@ export function Workspace({
     <div className="flex h-dvh flex-col">
       {/* Top bar */}
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-line bg-panel px-3">
+        <button
+          onClick={toggleSidebar}
+          aria-expanded={sidebarOpen}
+          title={sidebarOpen ? "收起项目列表" : "展开项目列表，切换到其他项目"}
+          className={`flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs ${
+            sidebarOpen ? "bg-accent-soft text-accent" : "text-muted hover:bg-raised hover:text-ink"
+          }`}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+            <rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M6 2.500v11" stroke="currentColor" strokeWidth="1.4" />
+          </svg>
+          <span className="hidden sm:inline">项目</span>
+        </button>
         <Brand compact />
         <div className="min-w-0 flex-1">
           {renaming ? (
@@ -606,6 +655,14 @@ export function Workspace({
       </div>
 
       <div className="flex min-h-0 flex-1">
+        <ProjectSidebar
+          projects={projects}
+          currentId={project.id}
+          currentTitle={title}
+          busy={busy}
+          open={sidebarOpen}
+          onClose={toggleSidebar}
+        />
         {/* Chat */}
         <section
           className={`${pane === "chat" ? "flex" : "hidden"} w-full min-w-0 flex-col border-line md:flex md:w-[400px] md:shrink-0 md:border-r`}
@@ -691,7 +748,7 @@ export function Workspace({
                   <button
                     type="submit"
                     disabled={!input.trim() || (raceOn && (raceModels.length < 2 || raceModels.length > quota.freeLeft + quota.credits))}
-                    className="rounded-full bg-accent px-4 py-1 text-xs font-medium text-white disabled:opacity-40"
+                    className="shrink-0 whitespace-nowrap rounded-full bg-accent px-4 py-1 text-xs font-medium text-white disabled:opacity-40"
                   >
                     {raceOn ? "开始竞速" : "发送"}
                   </button>
