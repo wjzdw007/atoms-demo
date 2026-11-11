@@ -1,4 +1,4 @@
-import { createClient, type Client, type InArgs } from "@libsql/client";
+import { createClient, type Client, type InArgs, type Transaction } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 
 /**
@@ -141,7 +141,47 @@ const SCHEMA = [
  * Keep migrations compatible with the previous release, so rolling the code back stays safe:
  * add columns freely, but stop using a column in one release and drop it in a later one.
  */
-type Migration = { id: string; sql: string; needed: (client: Client) => Promise<boolean> };
+type Migration = {
+  id: string;
+  /** One statement, or a function for changes that have to look at the data first. */
+  sql: string | ((client: Client) => Promise<void>);
+  needed: (client: Client) => Promise<boolean>;
+};
+
+/**
+ * Before the unique index on (project_id, number): two saves at the same moment could give two
+ * versions of a project the same number. Renumber such projects in their existing order.
+ */
+async function uniqueVersionNumbers(client: Client) {
+  const projects = await client.execute(
+    "SELECT DISTINCT project_id FROM versions GROUP BY project_id, number HAVING COUNT(*) > 1",
+  );
+  for (const { project_id } of projects.rows) {
+    const rows = await client.execute({
+      sql: "SELECT id, number FROM versions WHERE project_id = ? ORDER BY number, created_at, id",
+      args: [project_id],
+    });
+    let next = Number(rows.rows[0]?.number ?? 1);
+    for (const row of rows.rows) {
+      if (Number(row.number) > next) next = Number(row.number);
+      if (Number(row.number) !== next) {
+        await client.execute({ sql: "UPDATE versions SET number = ? WHERE id = ?", args: [next, row.id] });
+      }
+      next++;
+    }
+  }
+  await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_versions_number ON versions(project_id, number)");
+}
+
+/** An account may have one unpaid order. Where a race left several, the oldest stays. */
+async function onePendingOrder(client: Client) {
+  await client.execute(
+    `DELETE FROM orders WHERE status = 'pending' AND EXISTS (
+       SELECT 1 FROM orders o WHERE o.user_id = orders.user_id AND o.status = 'pending'
+         AND (o.created_at < orders.created_at OR (o.created_at = orders.created_at AND o.id < orders.id)))`,
+  );
+  await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_one_pending ON orders(user_id) WHERE status = 'pending'");
+}
 
 async function hasColumn(client: Client, table: string, column: string) {
   const res = await client.execute(`PRAGMA table_info(${table})`);
@@ -168,6 +208,18 @@ const MIGRATIONS: Migration[] = [
     sql: "UPDATE users SET password_hash = NULL WHERE password_hash IS NOT NULL",
     needed: (client) => hasColumn(client, "users", "password_hash"),
   },
+  {
+    // Version numbers are unique per project; the index is what makes concurrent saves safe.
+    id: "004_versions_unique_number",
+    sql: uniqueVersionNumbers,
+    needed: async () => true,
+  },
+  {
+    // At most one unpaid order per account, enforced by the database instead of a prior read.
+    id: "005_orders_one_pending",
+    sql: onePendingOrder,
+    needed: async () => true,
+  },
 ];
 
 export async function migrate(client: Client) {
@@ -175,7 +227,10 @@ export async function migrate(client: Client) {
   const done = new Set((await client.execute("SELECT id FROM schema_migrations")).rows.map((row) => String(row.id)));
   for (const migration of MIGRATIONS) {
     if (done.has(migration.id)) continue;
-    if (await migration.needed(client)) await client.execute(migration.sql);
+    if (await migration.needed(client)) {
+      if (typeof migration.sql === "string") await client.execute(migration.sql);
+      else await migration.sql(client);
+    }
     await client.execute({
       sql: "INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)",
       args: [migration.id, Date.now()],
@@ -215,6 +270,25 @@ export async function queryOne<T = Record<string, unknown>>(sql: string, args: I
 export async function run(sql: string, args: InArgs = []) {
   const client = await getClient();
   return client.execute({ sql, args });
+}
+
+/**
+ * Runs `work` inside one write transaction: everything it does is committed together, or not at
+ * all if it throws. For changes where a later statement depends on what an earlier one did.
+ */
+export async function withTransaction<T>(work: (tx: Transaction) => Promise<T>): Promise<T> {
+  const client = await getClient();
+  const tx = await client.transaction("write");
+  try {
+    const result = await work(tx);
+    await tx.commit();
+    return result;
+  } catch (error) {
+    await tx.rollback().catch(() => {});
+    throw error;
+  } finally {
+    tx.close();
+  }
 }
 
 /** Runs several statements atomically (all or nothing). */

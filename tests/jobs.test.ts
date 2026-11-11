@@ -84,4 +84,33 @@ describe("recoverInterruptedJobs", () => {
     expect(await jobs.recoverInterruptedJobs()).toBe(0);
     expect((await store.getQuota(user)).credits).toBe(before.credits);
   });
+  it("keeps the job open when the refund cannot be written, and refunds it on the next start", async () => {
+    const project = { id: await store.createProject(user.id, "退款写不进去的项目") };
+    const before = await store.getQuota(user);
+    await store.chargeGeneration(user);
+    await store.chargeGeneration(user, true);
+    await db.run(
+      `INSERT INTO jobs (id, project_id, user_id, prompt, charges, charged_on, status, started_at)
+       VALUES ('unlucky', ?, ?, '做个游戏', '["free","credits"]', ?, 'running', ?)`,
+      [project.id, user.id, store.usageDay(), Date.now()],
+    );
+    // The database refuses the credit refund, after the free unit was already handed back.
+    await db.run(
+      `CREATE TRIGGER refuse_refund BEFORE INSERT ON credit_ledger WHEN NEW.reason = 'refund'
+       BEGIN SELECT RAISE(ABORT, 'disk full'); END`,
+    );
+    expect(await jobs.recoverInterruptedJobs()).toBe(0);
+    // Nothing half-done: the row is still open and neither unit has been given back.
+    expect(await db.queryOne("SELECT status FROM jobs WHERE id = 'unlucky'")).toEqual({ status: "running" });
+    const during = await store.getQuota(user);
+    expect([during.freeLeft, during.credits]).toEqual([before.freeLeft - 1, before.credits - 1]);
+
+    await db.run("DROP TRIGGER refuse_refund");
+    expect(await jobs.recoverInterruptedJobs()).toBe(1);
+    const after = await store.getQuota(user);
+    expect([after.freeLeft, after.credits]).toEqual([before.freeLeft, before.credits]);
+    expect(await jobs.recoverInterruptedJobs()).toBe(0);
+    expect((await store.getQuota(user)).credits).toBe(before.credits);
+  });
 });
+

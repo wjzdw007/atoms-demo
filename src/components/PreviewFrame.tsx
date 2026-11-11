@@ -1,22 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ANONYMOUS, lastViewer, localKey, readLocal, rememberViewer, type Store } from "@/lib/app-cache";
 import { buildSrcdoc, buildStreamDoc } from "@/lib/html";
 
 const MAX_STORE_BYTES = 500_000;
 const SAVE_DELAY = 600;
-
-type Store = Record<string, string>;
-
-const localKey = (appId: string) => `atoms:app-store:${appId}`;
-
-function readLocal(appId: string): Store {
-  try {
-    return JSON.parse(localStorage.getItem(localKey(appId)) || "{}");
-  } catch {
-    return {};
-  }
-}
 
 /** Resolves to whether the server accepted the save. */
 function saveRemote(appId: string, data: Store) {
@@ -34,24 +23,37 @@ function saveRemote(appId: string, data: Store) {
 /**
  * The app's data lives on the server, one copy per (app, user), so it follows the account across
  * devices. A visitor with no identity yet (someone who just opened a shared link) starts from
- * this browser's copy; their first save creates a guest identity and moves the data to the cloud.
- * `remote` stays true until the server actually refuses a save.
+ * this browser's anonymous copy; their first save creates a guest identity and from then on the
+ * data is in the cloud. `remote` stays true until the server actually refuses a save.
+ *
+ * `viewer` says whose local copy this is: the signed-in user's id, or "anon".
  */
-async function loadStore(appId: string): Promise<{ data: Store; remote: boolean }> {
-  const local = readLocal(appId);
+type Loaded = { data: Store; remote: boolean; viewer: string };
+
+async function loadStore(appId: string): Promise<Loaded> {
   try {
     const res = await fetch(`/api/apps/${appId}/storage`);
-    if (res.status === 401) return { data: local, remote: true };
-    if (!res.ok) return { data: local, remote: false };
-    const { data } = (await res.json()) as { data: Store };
-    if (Object.keys(data).length === 0 && Object.keys(local).length > 0) {
-      // First visit since server storage existed: carry over what this browser already had.
-      void saveRemote(appId, local);
-      return { data: local, remote: true };
+    if (res.status === 401) {
+      rememberViewer(ANONYMOUS);
+      return { data: readLocal(ANONYMOUS, appId), remote: true, viewer: ANONYMOUS };
     }
-    return { data, remote: true };
+    if (!res.ok) {
+      const viewer = lastViewer();
+      return { data: readLocal(viewer, appId), remote: false, viewer };
+    }
+    const body = (await res.json()) as { data: Store; viewer?: string };
+    const viewer = body.viewer || ANONYMOUS;
+    rememberViewer(viewer);
+    const local = readLocal(viewer, appId);
+    if (Object.keys(body.data).length === 0 && Object.keys(local).length > 0) {
+      // This same viewer's data from a time the server could not take it: send it up now.
+      void saveRemote(appId, local);
+      return { data: local, remote: true, viewer };
+    }
+    return { data: body.data, remote: true, viewer };
   } catch {
-    return { data: local, remote: false };
+    const viewer = lastViewer();
+    return { data: readLocal(viewer, appId), remote: false, viewer };
   }
 }
 
@@ -121,7 +123,7 @@ export default function PreviewFrame({
   // null until the stored data has been fetched; the frame is not created before that, so the
   // app never boots with empty storage and then overwrites the real data.
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
-  const storeRef = useRef<{ data: Store; remote: boolean }>({ data: {}, remote: false });
+  const storeRef = useRef<Loaded>({ data: {}, remote: false, viewer: ANONYMOUS });
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -201,7 +203,7 @@ export default function PreviewFrame({
         if (json.length > MAX_STORE_BYTES) return;
         storeRef.current.data = next;
         try {
-          localStorage.setItem(localKey(appId), json);
+          localStorage.setItem(localKey(storeRef.current.viewer, appId), json);
         } catch {
           /* storage unavailable or full */
         }

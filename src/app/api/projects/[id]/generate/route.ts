@@ -2,7 +2,7 @@ import { getUser, jsonError } from "@/lib/auth";
 import { config } from "@/lib/config";
 import { cancelJob, finishJob, getJob, startJob, streamJob } from "@/lib/jobs";
 import { clientIpHash } from "@/lib/rate-limit";
-import { chargeGeneration, getOwnedProject, hasStorageRoom, refundGeneration, type ChargeSource } from "@/lib/store";
+import { chargeGeneration, getOwnedProject, hasStorageRoom, releaseGeneration, type ChargeSource } from "@/lib/store";
 
 export const maxDuration = 800;
 
@@ -51,15 +51,20 @@ export async function POST(request: Request, ctx: Params) {
   // The free allowance covers free models only; premium models always spend a credit.
   const ipHash = await clientIpHash();
   const picks = racing ? lanes : [choice];
-  const charged: ChargeSource[] = [];
+  const charged: { source: ChargeSource; pooled: boolean }[] = [];
+  // Gives back everything taken so far, site-wide and shared slots included: no model call was
+  // made, so a request that cannot run must not eat into anyone's budget.
+  const release = async () => {
+    for (const charge of charged) await releaseGeneration(user.id, charge, ipHash);
+  };
   for (const pick of picks) {
     const charge = await chargeGeneration(user, pick.premium, ipHash);
     if (charge.ok) {
-      charged.push(charge.source);
+      charged.push({ source: charge.source, pooled: charge.pooled });
       continue;
     }
     // Nothing runs unless every lane can be paid for.
-    for (const source of charged) await refundGeneration(user.id, source);
+    await release();
     if (charge.reason === "site") return jsonError("今天体验的人太多，全站生成额度已用完，请明天再来。", 429);
     if (charge.reason === "ip") {
       return jsonError("这个网络下的访客今天的免费次数已经用完。用 Google 登录后可以继续使用，或明天再来。", 429);
@@ -77,12 +82,12 @@ export async function POST(request: Request, ctx: Params) {
     projectTitle: project.title,
     prompt,
     model,
-    charge: charged[0],
-    race: racing ? lanes.map((m, i) => ({ model: m.id, label: m.label, charge: charged[i] })) : undefined,
+    charge: charged[0].source,
+    race: racing ? lanes.map((m, i) => ({ model: m.id, label: m.label, charge: charged[i].source })) : undefined,
   });
   if (outcome !== "started") {
     // Nothing ran, so give the units back.
-    for (const source of charged) await refundGeneration(user.id, source);
+    await release();
     if (outcome === "user_limit") return jsonError("你同时运行的任务太多了，请等其中一个完成。", 429);
     if (outcome === "server_limit") return jsonError("服务器正忙，请稍等片刻再试。", 503);
     return jsonError("这个项目正在生成中，请等它完成或先停止。", 409);

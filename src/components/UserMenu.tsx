@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { clearLocalAppData } from "@/lib/app-cache";
 import type { User } from "@/lib/types";
 
 export function UserMenu({ user }: { user: User | null }) {
@@ -9,6 +10,8 @@ export function UserMenu({ user }: { user: User | null }) {
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
+    // App data cached in this browser belongs to the account that is leaving.
+    clearLocalAppData();
     router.push("/");
     router.refresh();
   }

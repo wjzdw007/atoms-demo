@@ -24,7 +24,49 @@ describe("migrate", () => {
     expect(user.google_linked).toBe(0);
     expect(user.session_version).toBe(0);
     const applied = (await client.execute("SELECT id FROM schema_migrations ORDER BY id")).rows.map((r) => r.id);
-    expect(applied).toEqual(["001_users_session_version", "002_users_google_linked", "003_clear_password_hashes"]);
+    expect(applied).toEqual([
+      "001_users_session_version",
+      "002_users_google_linked",
+      "003_clear_password_hashes",
+      "004_versions_unique_number",
+      "005_orders_one_pending",
+    ]);
+  });
+
+  it("repairs duplicate version numbers and extra unpaid orders before making them impossible", async () => {
+    const client = createClient({ url: "file::memory:" });
+    await client.execute(
+      "CREATE TABLE versions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, number INTEGER NOT NULL, html TEXT NOT NULL, prompt TEXT NOT NULL, created_at INTEGER NOT NULL)",
+    );
+    await client.execute(
+      "CREATE TABLE orders (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, pack_id TEXT NOT NULL, credits INTEGER NOT NULL, amount_cents INTEGER NOT NULL, status TEXT NOT NULL, provider TEXT NOT NULL, created_at INTEGER NOT NULL, paid_at INTEGER)",
+    );
+    // What two saves at the same moment used to leave behind: two versions numbered 2.
+    const versions: [string, string, number, number][] = [
+      ["a", "p1", 1, 10],
+      ["b", "p1", 2, 20],
+      ["c", "p1", 2, 21],
+      ["d", "p1", 3, 30],
+      ["e", "p2", 7, 10],
+    ];
+    for (const [id, project, number, at] of versions) {
+      await client.execute({ sql: "INSERT INTO versions VALUES (?, ?, ?, '', '', ?)", args: [id, project, number, at] });
+    }
+    for (const [id, status, at] of [["old", "pending", 1], ["new", "pending", 2], ["done", "paid", 3]] as const) {
+      await client.execute({ sql: "INSERT INTO orders VALUES (?, 'u', 'starter', 20, 990, ?, 'manual', ?, NULL)", args: [id, status, at] });
+    }
+
+    const { migrate } = await import("@/lib/db");
+    await migrate(client);
+
+    const numbered = (await client.execute("SELECT id, number FROM versions ORDER BY project_id, number")).rows.map((r) => `${r.id}${r.number}`);
+    expect(numbered).toEqual(["a1", "b2", "c3", "d4", "e7"]);
+    const orders = (await client.execute("SELECT id FROM orders ORDER BY id")).rows.map((r) => r.id);
+    expect(orders).toEqual(["done", "old"]);
+    await expect(client.execute("INSERT INTO versions VALUES ('f', 'p1', 4, '', '', 40)")).rejects.toThrow();
+    await expect(
+      client.execute("INSERT INTO orders VALUES ('again', 'u', 'starter', 20, 990, 'pending', 'manual', 9, NULL)"),
+    ).rejects.toThrow();
   });
 
   it("creates a fresh database without the retired column", async () => {

@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { config } from "./config";
-import { query, queryOne, run, transaction } from "./db";
+import { query, queryOne, run, transaction, withTransaction } from "./db";
 import type { Message, Project, RaceCandidate, User, VersionMeta } from "./types";
 
 export type ProjectSummary = Project & {
@@ -58,23 +58,18 @@ export function getLatestVersion(projectId: string) {
 }
 
 export async function addVersion(projectId: string, html: string, prompt: string): Promise<VersionMeta> {
-  const last = await queryOne<{ n: number | null }>("SELECT MAX(number) AS n FROM versions WHERE project_id = ?", [
-    projectId,
-  ]);
-  const version: VersionMeta = {
-    id: nanoid(12),
-    number: Number(last?.n ?? 0) + 1,
-    prompt,
-    created_at: Date.now(),
-  };
-  await run("INSERT INTO versions (id, project_id, number, html, prompt, created_at) VALUES (?, ?, ?, ?, ?, ?)", [
-    version.id,
-    projectId,
-    version.number,
-    html,
-    prompt,
-    version.created_at,
-  ]);
+  const id = nanoid(12);
+  const createdAt = Date.now();
+  // The number is taken and the row written by one statement, so two saves at the same moment
+  // (a restore next to a finishing job, say) cannot both get the same number. The unique index
+  // on (project_id, number) backs that up.
+  const inserted = await run(
+    `INSERT INTO versions (id, project_id, number, html, prompt, created_at)
+     SELECT ?, ?, COALESCE(MAX(number), 0) + 1, ?, ?, ? FROM versions WHERE project_id = ?
+     RETURNING number`,
+    [id, projectId, html, prompt, createdAt, projectId],
+  );
+  const version: VersionMeta = { id, number: Number(inserted.rows[0].number), prompt, created_at: createdAt };
   await run("UPDATE projects SET updated_at = ? WHERE id = ?", [version.created_at, projectId]);
   await pruneVersions(projectId);
   return version;
@@ -174,7 +169,10 @@ export async function chargeGeneration(
   creditsOnly = false,
   /** Pseudonymous client address; guests behind one address share a daily free pool. */
   ipHash = "",
-): Promise<{ ok: true; source: ChargeSource } | { ok: false; reason: "site" | "empty" | "user_max" | "ip" }> {
+): Promise<
+  | { ok: true; source: ChargeSource; /** Also took a slot from the guests' shared pool for this address. */ pooled: boolean }
+  | { ok: false; reason: "site" | "empty" | "user_max" | "ip" }
+> {
   const { quota } = config();
   const day = today();
   const dayStart = Date.parse(`${day}T00:00:00Z`);
@@ -191,7 +189,8 @@ export async function chargeGeneration(
     return { ok: false, reason: "user_max" };
   }
 
-  // Reserve a slot under the site-wide ceiling first; this counter is never refunded.
+  // Reserve a slot under the site-wide ceiling first. A refund after a generation ran leaves this
+  // counter alone; only a reservation that never led to a model call is released again.
   const site = await run(
     `INSERT INTO site_usage (day, count) VALUES (?, 1)
      ON CONFLICT(day) DO UPDATE SET count = count + 1 WHERE count < ?`,
@@ -218,7 +217,7 @@ export async function chargeGeneration(
        ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1 WHERE count < ?`,
       [user.id, day, freeLimit],
     );
-    if (free.rowsAffected > 0) return { ok: true, source: "free" };
+    if (free.rowsAffected > 0) return { ok: true, source: "free", pooled };
   }
 
   const paid = await run(
@@ -227,7 +226,7 @@ export async function chargeGeneration(
      WHERE (SELECT COALESCE(SUM(delta), 0) FROM credit_ledger WHERE user_id = ?) >= 1`,
     [nanoid(), user.id, Date.now(), user.id],
   );
-  if (paid.rowsAffected > 0) return { ok: true, source: "credits" };
+  if (paid.rowsAffected > 0) return { ok: true, source: "credits", pooled };
 
   // Nothing was spent and no model call will happen: release the reserved slots again.
   await run("UPDATE site_usage SET count = count - 1 WHERE day = ? AND count > 0", [day]);
@@ -251,12 +250,28 @@ export async function refundGeneration(userId: string, source: ChargeSource, day
   }
 }
 
+/**
+ * Undoes a charge for a generation that never started (another lane of the race could not be
+ * paid for, or the job was not accepted). Unlike a refund, this also frees the site-wide slot
+ * and the shared guest slot: no model call was made, so nothing was used. Without this, requests
+ * that are bound to fail could use up the whole site's daily budget.
+ */
+export async function releaseGeneration(userId: string, charge: { source: ChargeSource; pooled: boolean }, ipHash = "") {
+  const day = today();
+  await refundGeneration(userId, charge.source, day);
+  await run("UPDATE site_usage SET count = count - 1 WHERE day = ? AND count > 0", [day]);
+  if (charge.pooled && ipHash) {
+    await run("UPDATE ip_usage SET count = count - 1 WHERE ip_hash = ? AND day = ? AND count > 0", [ipHash, day]);
+  }
+}
+
 export const usageDay = today;
 
 /** Bytes of saved versions across all of a user's projects. */
 export async function storageUsed(userId: string) {
   const row = await queryOne<{ total: number | null }>(
-    `SELECT SUM(LENGTH(v.html)) AS total FROM versions v
+    // LENGTH of text counts characters; the limit is in bytes, and Chinese text is three each.
+    `SELECT SUM(LENGTH(CAST(v.html AS BLOB))) AS total FROM versions v
      JOIN projects p ON p.id = v.project_id WHERE p.user_id = ?`,
     [userId],
   );
@@ -288,18 +303,24 @@ export async function createOrder(userId: string, packId: string, mode: "manual"
   // One open order per account, so several pending orders cannot be settled together to get past
   // the balance cap. A self-confirming demo order simply replaces an abandoned one; an order that
   // is waiting for a real payment is never dropped silently.
-  if (mode === "mock") {
-    await run("DELETE FROM orders WHERE user_id = ? AND status = 'pending'", [userId]);
-  } else {
-    const open = await queryOne("SELECT id FROM orders WHERE user_id = ? AND status = 'pending'", [userId]);
-    if (open) return { error: "pending_exists" as const };
-  }
+  // The rule itself is a unique index (one pending order per user), so two requests at the same
+  // moment cannot both get an order; the loser's insert fails and is reported like any other.
   const id = nanoid(16);
-  await run(
-    `INSERT INTO orders (id, user_id, pack_id, credits, amount_cents, status, provider, created_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-    [id, userId, pack.id, pack.credits, pack.priceCents, mode, Date.now()],
-  );
+  const insert = {
+    sql: `INSERT INTO orders (id, user_id, pack_id, credits, amount_cents, status, provider, created_at)
+          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    args: [id, userId, pack.id, pack.credits, pack.priceCents, mode, Date.now()],
+  };
+  try {
+    if (mode === "mock") {
+      await transaction([{ sql: "DELETE FROM orders WHERE user_id = ? AND status = 'pending'", args: [userId] }, insert]);
+    } else {
+      await run(insert.sql, insert.args);
+    }
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE|constraint/i.test(error.message)) return { error: "pending_exists" as const };
+    throw error;
+  }
   return { id };
 }
 
@@ -329,12 +350,15 @@ export async function settleOrder(orderId: string, userId: string) {
   );
   if (!order) return "missing" as const;
   if (order.status !== "pending") return "already_paid" as const;
-  if ((await getBalance(userId)) + Number(order.credits) > config().billing.maxBalance) return "over_limit" as const;
   const now = Date.now();
+  // The balance cap is checked by the same statement that marks the order paid, inside the
+  // transaction: checked beforehand, two orders settled at the same moment would each see the
+  // old balance and together go past the cap.
   const results = await transaction([
     {
-      sql: "UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ? AND user_id = ? AND status = 'pending'",
-      args: [now, orderId, userId],
+      sql: `UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ? AND user_id = ? AND status = 'pending'
+              AND (SELECT COALESCE(SUM(delta), 0) FROM credit_ledger WHERE user_id = ?) + credits <= ?`,
+      args: [now, orderId, userId, userId, config().billing.maxBalance],
     },
     {
       sql: `INSERT INTO credit_ledger (id, user_id, delta, reason, ref, created_at)
@@ -344,7 +368,28 @@ export async function settleOrder(orderId: string, userId: string) {
       args: [nanoid(), userId, Number(order.credits), orderId, now, orderId, now, orderId],
     },
   ]);
-  return results[1].rowsAffected > 0 ? ("paid" as const) : ("already_paid" as const);
+  if (results[1].rowsAffected > 0) return "paid" as const;
+  // Nothing was granted: either someone else settled it first, or the cap held it back.
+  const after = await queryOne<{ status: string }>("SELECT status FROM orders WHERE id = ?", [orderId]);
+  return after?.status === "pending" ? ("over_limit" as const) : ("already_paid" as const);
+}
+
+/**
+ * Signing in to an existing account while using the site as a guest: the guest's projects and
+ * app data move to that account, so "your projects are kept when you sign in" holds here too.
+ * Where both already have data for the same app, the account's copy wins. The guest's sessions
+ * end with it.
+ */
+export function adoptGuest(guestId: string, userId: string) {
+  return withTransaction(async (tx) => {
+    const moved = await tx.execute({ sql: "UPDATE projects SET user_id = ? WHERE user_id = ?", args: [userId, guestId] });
+    await tx.execute({ sql: "UPDATE OR IGNORE app_storage SET user_id = ? WHERE user_id = ?", args: [userId, guestId] });
+    await tx.execute({ sql: "DELETE FROM app_storage WHERE user_id = ?", args: [guestId] });
+    // A job still running for the guest is refunded to the account if a restart cuts it off.
+    await tx.execute({ sql: "UPDATE jobs SET user_id = ? WHERE user_id = ? AND status = 'running'", args: [userId, guestId] });
+    await tx.execute({ sql: "UPDATE users SET session_version = session_version + 1 WHERE id = ?", args: [guestId] });
+    return moved.rowsAffected;
+  });
 }
 
 /** Admin view: orders waiting for payment confirmation, oldest first. */

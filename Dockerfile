@@ -13,7 +13,8 @@ RUN npm run build
 FROM node:24-slim
 ENV NODE_ENV=production
 WORKDIR /app
-# The whole build tree, dev dependencies included: next.config.ts is compiled at start.
+# The whole build tree, dev dependencies included: next.config.ts is compiled at start, which
+# needs TypeScript. None of the dev dependencies is reachable from a request.
 COPY --from=build /app ./
 RUN mkdir -p data && chown -R node:node data .next
 USER node

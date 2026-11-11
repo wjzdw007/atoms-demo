@@ -47,7 +47,8 @@ export async function GET(_request: Request, ctx: Params) {
   } catch {
     /* corrupted row: start empty */
   }
-  return Response.json({ data });
+  // `viewer` lets the page keep its local copy apart per account (see PreviewFrame).
+  return Response.json({ data, viewer: auth.userId });
 }
 
 export async function PUT(request: Request, ctx: Params) {

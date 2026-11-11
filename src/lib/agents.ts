@@ -280,7 +280,7 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
   const engineerModel = input.model || config.model;
   // Streamed output is cut off once it can no longer be saved, which also bounds the memory a
   // job's event log can take.
-  const maxCodeChars = appConfig().storage.maxHtmlBytes;
+  const maxCodeBytes = appConfig().storage.maxHtmlBytes;
   const client = config.mock ? null : new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, maxRetries: 1 });
 
   try {
@@ -331,6 +331,8 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
       { role: "user", content: engineerUser },
     ];
     let rawCode = "";
+    // The limit is in bytes, and a character of Chinese text takes three.
+    let codeBytes = 0;
     const state = { truncated: false };
     const codeStream = client
       ? streamChat(client, engineerModel, messages, signal, state)
@@ -341,7 +343,8 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
         continue;
       }
       rawCode += delta;
-      if (rawCode.length > maxCodeChars) throw new Error(TOO_LARGE);
+      codeBytes += Buffer.byteLength(delta);
+      if (codeBytes > maxCodeBytes) throw new Error(TOO_LARGE);
       yield { type: "code", delta };
     }
 
@@ -364,7 +367,8 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
           continue;
         }
         rawCode += delta;
-        if (rawCode.length > maxCodeChars) throw new Error(TOO_LARGE);
+        codeBytes += Buffer.byteLength(delta);
+        if (codeBytes > maxCodeBytes) throw new Error(TOO_LARGE);
         yield { type: "code", delta };
       }
     }
@@ -412,6 +416,7 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
         yield { type: "stage", agent: "engineer", status: "start", note: "正在按评审意见修复" };
         yield { type: "code_reset" };
         let fixedRaw = "";
+        let fixedBytes = 0;
         const fixStream = streamChat(
           client,
           engineerModel,
@@ -431,7 +436,8 @@ export async function* runAgents(input: AgentInput): AsyncGenerator<PipelineEven
             continue;
           }
           fixedRaw += delta;
-          if (fixedRaw.length > maxCodeChars) break;
+          fixedBytes += Buffer.byteLength(delta);
+          if (fixedBytes > maxCodeBytes) break;
           yield { type: "code", delta };
         }
         const fixedHtml = extractHtml(fixedRaw);
@@ -514,7 +520,7 @@ export async function* planStage(input: AgentInput): AsyncGenerator<PipelineEven
 export async function* engineerStage(input: AgentInput & { plan: string; title: string | null; model: string }): AsyncGenerator<Piece, string> {
   const config = appConfig().llm;
   const { prompt, plan, currentHtml, history, signal } = input;
-  const maxChars = appConfig().storage.maxHtmlBytes;
+  const maxBytes = appConfig().storage.maxHtmlBytes;
   const user = [
     engineerRequest(prompt, history, Boolean(currentHtml)),
     `产品经理的计划：\n${plan}`,
@@ -538,13 +544,15 @@ export async function* engineerStage(input: AgentInput & { plan: string; title: 
           signal,
         );
     let raw = "";
+    let bytes = 0;
     for await (const delta of stream) {
       if (isThought(delta)) {
         yield delta;
         continue;
       }
       raw += delta;
-      if (raw.length > maxChars) throw new Error(TOO_LARGE);
+      bytes += Buffer.byteLength(delta);
+      if (bytes > maxBytes) throw new Error(TOO_LARGE);
       yield delta;
     }
     return extractHtml(raw);

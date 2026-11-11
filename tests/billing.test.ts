@@ -40,9 +40,9 @@ describe("chargeGeneration", () => {
   it("spends the free allowance first, then credits, then refuses", async () => {
     const user = await addUser(member("alice"));
     await grant(user.id, 1);
-    expect(await store.chargeGeneration(user)).toEqual({ ok: true, source: "free" });
-    expect(await store.chargeGeneration(user)).toEqual({ ok: true, source: "free" });
-    expect(await store.chargeGeneration(user)).toEqual({ ok: true, source: "credits" });
+    expect(await store.chargeGeneration(user)).toEqual({ ok: true, source: "free", pooled: false });
+    expect(await store.chargeGeneration(user)).toEqual({ ok: true, source: "free", pooled: false });
+    expect(await store.chargeGeneration(user)).toEqual({ ok: true, source: "credits", pooled: false });
     expect(await store.chargeGeneration(user)).toEqual({ ok: false, reason: "empty" });
     expect(await store.getBalance(user.id)).toBe(0);
   });
@@ -51,7 +51,7 @@ describe("chargeGeneration", () => {
     const user = await addUser(member("bob"));
     expect(await store.chargeGeneration(user, true)).toEqual({ ok: false, reason: "empty" });
     await grant(user.id, 1);
-    expect(await store.chargeGeneration(user, true)).toEqual({ ok: true, source: "credits" });
+    expect(await store.chargeGeneration(user, true)).toEqual({ ok: true, source: "credits", pooled: false });
     expect((await store.getQuota(user)).freeLeft).toBe(2);
   });
 
@@ -85,6 +85,76 @@ describe("refundGeneration", () => {
   });
 });
 
+describe("releaseGeneration", () => {
+  const siteCount = async () =>
+    Number((await db.queryOne<{ count: number }>("SELECT count FROM site_usage WHERE day = ?", [store.usageDay()]))?.count ?? 0);
+
+  it("frees the site-wide and shared slots of a race that could not be paid for", async () => {
+    // A free lane is charged, then the premium lane fails for lack of credits: nothing runs.
+    const user = await addUser(guest("racer"));
+    const before = await siteCount();
+    const free = await store.chargeGeneration(user, false, "ip-race");
+    if (!free.ok) throw new Error("charge failed");
+    expect(free.pooled).toBe(true);
+    expect(await store.chargeGeneration(user, true, "ip-race")).toEqual({ ok: false, reason: "empty" });
+    await store.releaseGeneration(user.id, free, "ip-race");
+
+    expect(await siteCount()).toBe(before);
+    expect((await store.getQuota(user)).freeLeft).toBe(2);
+    const pool = await db.queryOne<{ count: number }>("SELECT count FROM ip_usage WHERE ip_hash = 'ip-race'");
+    expect(Number(pool?.count)).toBe(0);
+  });
+
+  it("leaves the site-wide count alone for an ordinary refund", async () => {
+    const user = await addUser(member("refunded"));
+    await store.chargeGeneration(user);
+    const counted = await siteCount();
+    await store.refundGeneration(user.id, "free");
+    expect(await siteCount()).toBe(counted);
+  });
+});
+
+describe("versions", () => {
+  it("gives simultaneous saves different numbers", async () => {
+    const user = await addUser(member("versions"));
+    const projectId = await store.createProject(user.id, "并发保存");
+    const saved = await Promise.all(Array.from({ length: 6 }, (_, i) => store.addVersion(projectId, `<html>${i}</html>`, `第 ${i} 次`)));
+    expect(saved.map((v) => v.number).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect((await store.listVersions(projectId)).map((v) => Number(v.number))).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("counts storage in bytes, not characters", async () => {
+    const user = await addUser(member("bytes"));
+    const projectId = await store.createProject(user.id, "中文");
+    await store.addVersion(projectId, "中".repeat(100), "x");
+    expect(await store.storageUsed(user.id)).toBe(300);
+  });
+});
+
+describe("adoptGuest", () => {
+  it("moves a guest's projects and app data to the account they sign in to", async () => {
+    const [visitor, account] = [await addUser(guest("visitor")), await addUser(member("returning"))];
+    const mine = await store.createProject(visitor.id, "访客做的");
+    const shared = await store.createProject(account.id, "账号里已有的");
+    const put = (project: string, user: string, data: string) =>
+      db.run("INSERT INTO app_storage (project_id, user_id, data, updated_at) VALUES (?, ?, ?, 1)", [project, user, data]);
+    await put(mine, visitor.id, "guest-data");
+    await put(shared, visitor.id, "guest-copy");
+    await put(shared, account.id, "account-copy");
+
+    expect(await store.adoptGuest(visitor.id, account.id)).toBe(1);
+    expect(await store.getOwnedProject(mine, account.id)).not.toBeNull();
+    expect(await store.getOwnedProject(mine, visitor.id)).toBeNull();
+    const data = await db.query<{ project_id: string; data: string }>(
+      "SELECT project_id, data FROM app_storage WHERE user_id = ? ORDER BY data",
+      [account.id],
+    );
+    // Where both had data for the same app, the account's own copy is the one that stays.
+    expect(data.map((row) => row.data)).toEqual(["account-copy", "guest-data"]);
+    expect(await db.query("SELECT 1 FROM app_storage WHERE user_id = ?", [visitor.id])).toEqual([]);
+  });
+});
+
 describe("orders", () => {
   it("grants credits exactly once, however often an order is settled", async () => {
     const user = await addUser(member("erin"));
@@ -100,6 +170,36 @@ describe("orders", () => {
     const user = await addUser(member("frank"));
     expect(await store.createOrder(user.id, "starter", "manual")).toHaveProperty("id");
     expect(await store.createOrder(user.id, "pro", "manual")).toEqual({ error: "pending_exists" });
+  });
+
+  it("gives two simultaneous requests one order between them", async () => {
+    const user = await addUser(member("twice"));
+    const results = await Promise.all([
+      store.createOrder(user.id, "starter", "manual"),
+      store.createOrder(user.id, "starter", "manual"),
+    ]);
+    expect(results.filter((r) => "id" in r)).toHaveLength(1);
+    expect(results.filter((r) => "error" in r && r.error === "pending_exists")).toHaveLength(1);
+  });
+
+  it("holds the balance cap when orders are settled at the same moment", async () => {
+    // Cap 150, balance 130: each 20-credit order fits on its own, both together do not.
+    const user = await addUser(member("capped"));
+    await grant(user.id, 130);
+    // Two unpaid orders cannot be created through the app any more; put them there directly, as
+    // if they had been, to check that settling is safe on its own.
+    await db.run("DROP INDEX idx_orders_one_pending");
+    for (const id of ["cap-a", "cap-b"]) {
+      await db.run(
+        "INSERT INTO orders (id, user_id, pack_id, credits, amount_cents, status, provider, created_at) VALUES (?, ?, 'starter', 20, 990, 'pending', 'manual', 1)",
+        [id, user.id],
+      );
+    }
+    const results = await Promise.all([store.settleOrderById("cap-a"), store.settleOrderById("cap-b")]);
+    expect(results.sort()).toEqual(["over_limit", "paid"]);
+    expect(await store.getBalance(user.id)).toBe(150);
+    await db.run("DELETE FROM orders WHERE status = 'pending' AND user_id = ?", [user.id]);
+    await db.run("CREATE UNIQUE INDEX idx_orders_one_pending ON orders(user_id) WHERE status = 'pending'");
   });
 
   it("refuses to settle past the balance cap", async () => {
